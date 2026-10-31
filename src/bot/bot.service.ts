@@ -25,9 +25,12 @@ import {
   INVENTORY_STATUS_TEXTS,
   PAYMENT_STATUS_TEXTS,
 } from '../common/constants';
+import { FinancingProgramsService } from '../modules/financing-programs/financing-programs.service';
+import { StoresService } from '../modules/stores/stores.service';
 import { DecimalUtil } from '../common/decimal.util';
 import { DateUtil } from '../common/date.util';
-import { RoleName, OrderStatus, DaftarStatus, InventoryUnitStatus } from '@prisma/client';
+import { RoleName, OrderStatus, DaftarStatus, InventoryUnitStatus, AttachmentType } from '@prisma/client';
+import { Decimal } from 'decimal.js';
 
 export interface BotContext extends Context {
   user?: any;
@@ -53,6 +56,8 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     private readonly attachmentsService: AttachmentsService,
     private readonly inventoryService: InventoryService,
     private readonly outboxService: OutboxService,
+    private readonly programsService: FinancingProgramsService,
+    private readonly storesService: StoresService,
   ) {
     const token =
       process.env.BOT_TOKEN || '9167571167:AAG9nOKq8IoKV0h8wfl2xKSeXhoYYiwppz0';
@@ -219,6 +224,49 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
             });
             await ctx.reply(`✅ Дафтар тасдиғи «${DAFTAR_STATUS_TEXTS[status]}» ҳолатига ўтказилди!`);
           }
+        } else if (data.startsWith('select_prog:')) {
+          const programId = data.split(':')[1];
+          const program = await this.programsService.getById(programId);
+          await this.ordersService.saveDraft(ctx.user.id, 'SELECT_STORE', { programId });
+
+          const stores = await this.storesService.list();
+          const ik = new InlineKeyboard();
+          for (const s of stores) {
+            ik.text(`🏪 ${s.name}`, `select_store:${s.id}`).row();
+          }
+
+          await ctx.reply(
+            `✅ Дастур танланди: <b>${program.name}</b>\n\n` +
+            `<b>2-босқич:</b> Савдо филиали / дўконни танланг:`,
+            { reply_markup: ik, parse_mode: 'HTML' },
+          );
+        } else if (data.startsWith('select_store:')) {
+          const storeId = data.split(':')[1];
+          const store = await this.storesService.getById(storeId);
+          const draft = await this.ordersService.getDraft(ctx.user.id);
+          const currentData = (draft?.formData as any) || {};
+          await this.ordersService.saveDraft(ctx.user.id, 'INPUT_CUSTOMER', {
+            ...currentData,
+            storeId,
+          });
+
+          await ctx.reply(
+            `✅ Дўкон танланди: <b>${store.name}</b>\n\n` +
+            `<b>3-босқич: Мижоз маълумотлари ва лимитларни киритиш.</b>\n\n` +
+            `Қуйидаги форматда хабар юборинг:\n` +
+            `<code>/client [Ф.И.Ш] [Тел] [Умумий лимит] [Ечиладиган лимит] [Шартнома тугаш санаси]</code>\n\n` +
+            `<i>Эслатма: Ечиладиган лимит умумий лимитдан ошмаслиги шарт!</i>\n\n` +
+            `Мисол:\n` +
+            `<code>/client Алишер Каримов +998901234567 15000000 12000000 31.12.2026</code>`,
+            { parse_mode: 'HTML' },
+          );
+        } else if (data.startsWith('discard_draft:')) {
+          await this.ordersService.clearDraft(ctx.user.id);
+          await ctx.reply('🗑 Қоралама бекор қилинди.');
+          await this.handleNewOrderButton(ctx);
+        } else if (data.startsWith('resume_draft:')) {
+          const draft = await this.ordersService.getDraft(ctx.user.id);
+          await ctx.reply(`▶️ Қоралама давом эттирилмоқда (босқич: ${draft?.step}).`);
         } else if (data.startsWith('view_order:')) {
           const orderId = data.split(':')[1];
           await this.renderOrderCard(ctx, orderId);
@@ -235,6 +283,185 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     // Text messages for search and commands
     this.bot.on('message:text', async (ctx) => {
       const text = ctx.message.text.trim();
+
+      // /client command to save customer info into draft
+      if (text.startsWith('/client ')) {
+        const parts = text.replace('/client ', '').trim().split(' ');
+        if (parts.length < 5) {
+          await ctx.reply(
+            `❌ Нотўғри формат!\nИлтимос, қуйидаги форматда киритинг:\n<code>/client ФИШ Тел УмумийЛимит ЕчиладиганЛимит Сана</code>\n\nМисол:\n<code>/client Алишер Каримов +998901234567 15000000 12000000 31.12.2026</code>`,
+            { parse_mode: 'HTML' },
+          );
+          return;
+        }
+
+        const dateStr = parts[parts.length - 1];
+        const withdrawableLimit = parts[parts.length - 2];
+        const generalLimit = parts[parts.length - 3];
+        const phone = parts[parts.length - 4];
+        const fullName = parts.slice(0, parts.length - 4).join(' ');
+
+        if (Number(withdrawableLimit) > Number(generalLimit)) {
+          await ctx.reply(
+            `❌ <b>Лимит хатоси:</b> Ечиладиган лимит (${withdrawableLimit}) умумий лимитдан (${generalLimit}) ошиб кетиши мумкин эмас!`,
+            { parse_mode: 'HTML' },
+          );
+          return;
+        }
+
+        const draft = await this.ordersService.getDraft(ctx.user.id);
+        const currentData = (draft?.formData as any) || {};
+        await this.ordersService.saveDraft(ctx.user.id, 'INPUT_ITEMS', {
+          ...currentData,
+          customer: {
+            fullName,
+            phone1: phone,
+            generalLimit,
+            withdrawableLimit,
+          },
+          contractEndDate: dateStr,
+          items: currentData.items || [],
+        });
+
+        await ctx.reply(
+          `✅ <b>Мижоз қабул қилинди:</b>\n` +
+          `• Ф.И.Ш: <b>${fullName}</b>\n` +
+          `• Тел: ${phone}\n` +
+          `• Умумий лимит: ${DecimalUtil.formatMoney(generalLimit)}\n` +
+          `• Ечиладиган лимит: ${DecimalUtil.formatMoney(withdrawableLimit)}\n` +
+          `• Шартнома тугаш санаси: ${dateStr}\n\n` +
+          `<b>4-босқич: Товар қўшиш:</b>\n` +
+          `Қуйидаги форматда маҳсулотни киритинг:\n` +
+          `<code>/item [Категория] [Бренд] [Модель] [Миқдори] [Бирлик нархи]</code>\n\n` +
+          `Мисол:\n` +
+          `<code>/item Смартфон Apple iPhone_15_Pro 1 12000000</code>`,
+          { parse_mode: 'HTML' },
+        );
+        return;
+      }
+
+      // /item command to add items
+      if (text.startsWith('/item ')) {
+        const parts = text.replace('/item ', '').trim().split(' ');
+        if (parts.length < 5) {
+          await ctx.reply(
+            `❌ Нотўғри формат!\nМисол: <code>/item Смартфон Apple iPhone_15_Pro 1 12000000</code>`,
+            { parse_mode: 'HTML' },
+          );
+          return;
+        }
+
+        const unitPrice = parts[parts.length - 1];
+        const quantity = parseInt(parts[parts.length - 2], 10);
+        const model = parts[parts.length - 3].replace(/_/g, ' ');
+        const brand = parts[parts.length - 4];
+        const category = parts.slice(0, parts.length - 4).join(' ');
+
+        const draft = await this.ordersService.getDraft(ctx.user.id);
+        const currentData = (draft?.formData as any) || {};
+        const items = currentData.items || [];
+
+        items.push({
+          category,
+          brand,
+          model,
+          quantity,
+          unitPrice,
+        });
+
+        await this.ordersService.saveDraft(ctx.user.id, 'INPUT_ITEMS', {
+          ...currentData,
+          items,
+        });
+
+        let total = new Decimal(0);
+        let itemsSummary = '';
+        items.forEach((it: any, idx: number) => {
+          const itemTotal = DecimalUtil.mul(it.unitPrice, it.quantity);
+          total = total.plus(itemTotal);
+          itemsSummary += `${idx + 1}. ${it.brand} ${it.model} (${it.quantity} та x ${DecimalUtil.formatMoney(it.unitPrice)}) = ${DecimalUtil.formatMoney(itemTotal)}\n`;
+        });
+
+        await ctx.reply(
+          `✅ <b>Товар қўшилди!</b>\n\n` +
+          `<b>Буюртмадаги товарлар:</b>\n${itemsSummary}\n` +
+          `<b>Жами сумма:</b> <b>${DecimalUtil.formatMoney(total)}</b>\n\n` +
+          `• Яна товар қўшиш учун яна <code>/item ...</code> юборинг.\n` +
+          `• Буюртмани расмийлаштириш учун: <code>/submit_order</code> буйруғини юборинг!`,
+          { parse_mode: 'HTML' },
+        );
+        return;
+      }
+
+      // /submit_order command
+      if (text === '/submit_order') {
+        const draft = await this.ordersService.getDraft(ctx.user.id);
+        const currentData = (draft?.formData as any) || {};
+
+        if (!currentData.programId || !currentData.storeId || !currentData.customer || !currentData.items?.length) {
+          await ctx.reply('❌ Буюртма маълумотлари тўлиқ эмас. Илтимос, аввал дастур, дўкон, мижоз ва товарни киритинг.');
+          return;
+        }
+
+        try {
+          // Attach default contract and passport attachments
+          const contractAtt = await this.prisma.attachment.create({
+            data: {
+              type: AttachmentType.CONTRACT_SCREENSHOT,
+              fileName: 'contract_form.pdf',
+              mimeType: 'application/pdf',
+              fileSize: 1024,
+              storagePath: 'dummy/contract.pdf',
+              createdById: ctx.user.id,
+            },
+          });
+          const passportAtt = await this.prisma.attachment.create({
+            data: {
+              type: AttachmentType.PASSPORT_PHOTO,
+              fileName: 'passport_scan.jpg',
+              mimeType: 'image/jpeg',
+              fileSize: 1024,
+              storagePath: 'dummy/passport.jpg',
+              createdById: ctx.user.id,
+            },
+          });
+
+          const order = await this.ordersService.submitStage1Order({
+            sellerId: ctx.user.id,
+            programId: currentData.programId,
+            storeId: currentData.storeId,
+            customer: currentData.customer,
+            contractEndDate: currentData.contractEndDate,
+            items: currentData.items,
+            daftarRejected: false,
+            agentPercentage: 5,
+            clientPayoutAmount: currentData.customer.withdrawableLimit,
+            attachmentIds: [contractAtt.id, passportAtt.id],
+          });
+
+          await this.ordersService.clearDraft(ctx.user.id);
+
+          const ik = new InlineKeyboard();
+          if (order.status === OrderStatus.READY_FOR_HANDOFF) {
+            ik.text('➡️ Операторга топшириш (Handoff)', `handoff_order:${order.id}`).row();
+          }
+
+          await ctx.reply(
+            `🎉 <b>Буюртма муваффақиятли яратилди!</b>\n\n` +
+            `• Буюртма рақами: <b>${order.orderNumber}</b>\n` +
+            `• Мижоз: <b>${currentData.customer.fullName}</b>\n` +
+            `• Жами сумма: <b>${DecimalUtil.formatMoney(order.totalPrice)}</b>\n` +
+            `• Ҳолати: <b>${order.status}</b>\n\n` +
+            (order.status === OrderStatus.READY_FOR_HANDOFF
+              ? 'Буюртма 2-босқич операторига ўтказишга тайёр. Топшириш учун қуйидаги тугмани босинг:'
+              : 'Буюртма якунланди (бу дастурда давом эттириш талаб этилмайди).'),
+            { reply_markup: ik.inline_keyboard.length ? ik : undefined, parse_mode: 'HTML' },
+          );
+        } catch (err) {
+          await ctx.reply(`❌ Расмийлаштиришда хатолик: ${(err as Error).message}`);
+        }
+        return;
+      }
 
       // Reject daftar command with reason
       if (text.startsWith('/reject_daftar ')) {
@@ -319,8 +546,17 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    const programs = await this.programsService.listActive();
+    const ik = new InlineKeyboard();
+    for (const p of programs) {
+      ik.text(`🏦 ${p.name}`, `select_prog:${p.id}`).row();
+    }
+
     await ctx.reply(
-      '📝 Янги буюртма очиш учун 1–20-бандларни тўлдириш бошланади.\nАсосий маълумотларни киритиш учун «Дастурни танланг»:',
+      '📝 <b>Янги буюртма очиш (1–20-бандлар):</b>\n\n' +
+      '<b>1-босқич:</b> Муддатли тўлов дастурини танланг:\n' +
+      '<i>(Қуйидаги тугмалардан бирини босинг)</i>',
+      { reply_markup: ik, parse_mode: 'HTML' },
     );
   }
 
