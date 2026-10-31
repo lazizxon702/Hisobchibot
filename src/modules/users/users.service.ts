@@ -67,6 +67,37 @@ export class UsersService {
         action: 'USER_REGISTERED',
         newValue: { telegramId: user.telegramId.toString(), isApproved: user.isApproved },
       });
+    } else {
+      const isSuperAdminEnv =
+        process.env.SUPER_ADMIN_TELEGRAM_ID &&
+        process.env.SUPER_ADMIN_TELEGRAM_ID !== '0' &&
+        BigInt(process.env.SUPER_ADMIN_TELEGRAM_ID) === tgId;
+
+      const hasAdminRole = user.roles.some((r) => r.role.name === RoleName.SUPER_ADMIN);
+
+      if (isSuperAdminEnv && (!user.isApproved || !hasAdminRole)) {
+        const adminRole = await this.prisma.role.upsert({
+          where: { name: RoleName.SUPER_ADMIN },
+          update: {},
+          create: { name: RoleName.SUPER_ADMIN },
+        });
+
+        await this.prisma.user.update({
+          where: { id: user.id },
+          data: { isApproved: true, isActive: true },
+        });
+
+        await this.prisma.userRole.upsert({
+          where: { userId_roleId: { userId: user.id, roleId: adminRole.id } },
+          update: {},
+          create: { userId: user.id, roleId: adminRole.id },
+        });
+
+        user = (await this.prisma.user.findUnique({
+          where: { id: user.id },
+          include: { roles: { include: { role: true } } },
+        }))!;
+      }
     }
 
     return user;
