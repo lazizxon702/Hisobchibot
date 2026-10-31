@@ -1,0 +1,561 @@
+import {
+  Injectable,
+  OnModuleInit,
+  OnModuleDestroy,
+  Logger,
+} from '@nestjs/common';
+import { Bot, Context, InlineKeyboard } from 'grammy';
+import { PrismaService } from '../infrastructure/prisma/prisma.service';
+import { UsersService } from '../modules/users/users.service';
+import { OrdersService } from '../modules/orders/orders.service';
+import { AssignmentsService } from '../modules/assignments/assignments.service';
+import { DaftarService } from '../modules/daftar/daftar.service';
+import { SalesService } from '../modules/sales/sales.service';
+import { PaymentsService } from '../modules/payments/payments.service';
+import { DebtsService } from '../modules/debts/debts.service';
+import { ReportsService } from '../modules/reports/reports.service';
+import { AttachmentsService } from '../modules/attachments/attachments.service';
+import { InventoryService } from '../modules/inventory/inventory.service';
+import { OutboxService } from '../infrastructure/outbox/outbox.service';
+import { getMainMenuKeyboard } from './keyboards/main-menu.keyboard';
+import {
+  BOT_TEXTS,
+  MENU_BUTTONS,
+  DAFTAR_STATUS_TEXTS,
+  INVENTORY_STATUS_TEXTS,
+  PAYMENT_STATUS_TEXTS,
+} from '../common/constants';
+import { DecimalUtil } from '../common/decimal.util';
+import { DateUtil } from '../common/date.util';
+import { RoleName, OrderStatus, DaftarStatus, InventoryUnitStatus } from '@prisma/client';
+
+export interface BotContext extends Context {
+  user?: any;
+  userRoles?: RoleName[];
+}
+
+@Injectable()
+export class BotService implements OnModuleInit, OnModuleDestroy {
+  private readonly logger = new Logger(BotService.name);
+  public bot: Bot<BotContext>;
+  private outboxInterval: any = null;
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly usersService: UsersService,
+    private readonly ordersService: OrdersService,
+    private readonly assignmentsService: AssignmentsService,
+    private readonly daftarService: DaftarService,
+    private readonly salesService: SalesService,
+    private readonly paymentsService: PaymentsService,
+    private readonly debtsService: DebtsService,
+    private readonly reportsService: ReportsService,
+    private readonly attachmentsService: AttachmentsService,
+    private readonly inventoryService: InventoryService,
+    private readonly outboxService: OutboxService,
+  ) {
+    const token =
+      process.env.BOT_TOKEN || '9167571167:AAG9nOKq8IoKV0h8wfl2xKSeXhoYYiwppz0';
+    this.bot = new Bot<BotContext>(token);
+  }
+
+  async onModuleInit() {
+    this.setupMiddlewares();
+    this.setupHandlers();
+
+    // Start outbox dispatcher
+    this.outboxInterval = setInterval(() => {
+      this.dispatchOutboxEvents().catch((err) => {
+        this.logger.error(`Outbox dispatch error: ${err.message}`);
+      });
+    }, 3000);
+
+    // Launch bot long polling if webhook is not set
+    if (!process.env.WEBHOOK_URL) {
+      this.bot.start({
+        onStart: (info) => {
+          this.logger.log(`Telegram Bot started successfully as @${info.username}`);
+        },
+      }).catch((err) => {
+        this.logger.warn(`Telegram Bot polling warning: ${err.message}`);
+      });
+    }
+  }
+
+  async onModuleDestroy() {
+    if (this.outboxInterval) {
+      clearInterval(this.outboxInterval);
+    }
+    await this.bot.stop();
+  }
+
+  private setupMiddlewares() {
+    // 1. Idempotency middleware: ProcessedTelegramUpdate deduplication (Section 11)
+    this.bot.use(async (ctx, next) => {
+      if (ctx.update?.update_id !== undefined) {
+        const updateId = BigInt(ctx.update.update_id);
+        try {
+          const existing = await this.prisma.processedTelegramUpdate.findUnique({
+            where: { updateId },
+          });
+          if (existing) {
+            this.logger.debug(`Duplicate update received and skipped: ${updateId}`);
+            return;
+          }
+          await this.prisma.processedTelegramUpdate.create({
+            data: { updateId },
+          });
+        } catch (e) {
+          // If collision or unique constraint, skip
+          return;
+        }
+      }
+      return next();
+    });
+
+    // 2. Authentication & Approval middleware (Section 3)
+    this.bot.use(async (ctx, next) => {
+      if (!ctx.from) return next();
+
+      try {
+        const user = await this.usersService.findOrCreateTelegramUser(ctx.from);
+        ctx.user = user;
+        ctx.userRoles = user.roles.map((r: any) => r.role.name as RoleName);
+
+        if (!user.isApproved) {
+          await ctx.reply(
+            `${BOT_TEXTS.unauthorized}<code>${ctx.from.id}</code>\n\nАдминистратор тасдиқлагандан сўнг тизимдан тўлиқ фойдалана оласиз.`,
+            { parse_mode: 'HTML' },
+          );
+          return;
+        }
+      } catch (err) {
+        this.logger.error(`Auth middleware error: ${(err as Error).message}`);
+      }
+
+      return next();
+    });
+  }
+
+  private setupHandlers() {
+    // /start command
+    this.bot.command('start', async (ctx) => {
+      const roles: RoleName[] = ctx.userRoles || [];
+      const kb = getMainMenuKeyboard(roles);
+      await ctx.reply(
+        `${BOT_TEXTS.welcome}\n\nСизнинг профилингиз: <b>${ctx.user.firstName || ''} ${ctx.user.lastName || ''}</b>\nРоллар: <i>${roles.join(', ') || 'Ходим'}</i>`,
+        { reply_markup: kb, parse_mode: 'HTML' },
+      );
+    });
+
+    // Main menu buttons routing
+    this.bot.hears(MENU_BUTTONS.newOrder, async (ctx) => {
+      await this.handleNewOrderButton(ctx);
+    });
+
+    this.bot.hears(MENU_BUTTONS.drafts, async (ctx) => {
+      await this.handleDraftsButton(ctx);
+    });
+
+    this.bot.hears(MENU_BUTTONS.myOrders, async (ctx) => {
+      await this.handleMyOrdersButton(ctx);
+    });
+
+    this.bot.hears(MENU_BUTTONS.incomingQueue, async (ctx) => {
+      await this.handleIncomingQueueButton(ctx);
+    });
+
+    this.bot.hears(MENU_BUTTONS.daftarReview, async (ctx) => {
+      await this.handleDaftarReviewButton(ctx);
+    });
+
+    this.bot.hears(MENU_BUTTONS.debts, async (ctx) => {
+      await this.handleDebtsButton(ctx);
+    });
+
+    this.bot.hears(MENU_BUTTONS.inventory, async (ctx) => {
+      await ctx.reply('📦 Товарларни қидириш учун IMEI ёки штрихкодни юборинг:');
+    });
+
+    this.bot.hears(MENU_BUTTONS.search, async (ctx) => {
+      await ctx.reply('🔎 Қидириш учун Буюртма ID (ORD-2026-...) ёки Чек рақамини (PAY-2026-...) ёзинг:');
+    });
+
+    this.bot.hears(MENU_BUTTONS.reports, async (ctx) => {
+      await this.handleReportsButton(ctx);
+    });
+
+    this.bot.hears(MENU_BUTTONS.management, async (ctx) => {
+      await this.handleManagementButton(ctx);
+    });
+
+    // Callback query handling
+    this.bot.on('callback_query:data', async (ctx) => {
+      const data = ctx.callbackQuery.data;
+      await ctx.answerCallbackQuery();
+
+      try {
+        if (data.startsWith('accept_order:')) {
+          const orderId = data.split(':')[1];
+          await this.assignmentsService.acceptAssignment(orderId, ctx.user.id);
+          await ctx.reply(`✅ Буюртма муваффақиятли қабул қилинди! Энди сиз ушбу буюртма бўйича 21–36-бандларни тўлдиришингиз ва савдоларни амалга оширишингиз мумкин.`);
+        } else if (data.startsWith('handoff_order:')) {
+          const orderId = data.split(':')[1];
+          await this.showHandoffOperators(ctx, orderId);
+        } else if (data.startsWith('assign_to:')) {
+          const [, orderId, operatorId] = data.split(':');
+          await this.assignmentsService.assignOrder(orderId, operatorId, ctx.user.id);
+          await ctx.reply('✅ Буюртма иккинчи босқич ходимига муваффақиятли юборилди!');
+        } else if (data.startsWith('review_daftar:')) {
+          const [, orderId, statusStr] = data.split(':');
+          const status = statusStr as DaftarStatus;
+          if (status === DaftarStatus.NEEDS_CORRECTION) {
+            await ctx.reply(`⚠️ Буюртмани қайтариш учун сабабни қуйидаги форматда ёзинг:\n<code>/reject_daftar ${orderId} [сабаб]</code>`, { parse_mode: 'HTML' });
+          } else {
+            await this.daftarService.updateReviewStatus({
+              orderId,
+              reviewerId: ctx.user.id,
+              status,
+            });
+            await ctx.reply(`✅ Дафтар тасдиғи «${DAFTAR_STATUS_TEXTS[status]}» ҳолатига ўтказилди!`);
+          }
+        } else if (data.startsWith('view_order:')) {
+          const orderId = data.split(':')[1];
+          await this.renderOrderCard(ctx, orderId);
+        } else if (data.startsWith('view_passport:')) {
+          const attachmentId = data.split(':')[1];
+          const accessUrl = await this.attachmentsService.getAttachmentAccess(attachmentId, ctx.user.id);
+          await ctx.reply(`🔒 Ҳимояланган паспорт файли ҳаволаси:\n${accessUrl}`);
+        }
+      } catch (err) {
+        await ctx.reply(`❌ Хатолик: ${(err as Error).message}`);
+      }
+    });
+
+    // Text messages for search and commands
+    this.bot.on('message:text', async (ctx) => {
+      const text = ctx.message.text.trim();
+
+      // Reject daftar command with reason
+      if (text.startsWith('/reject_daftar ')) {
+        const parts = text.split(' ');
+        const orderId = parts[1];
+        const reason = parts.slice(2).join(' ');
+        if (!reason) {
+          await ctx.reply('Илтимос, сабабни киритинг: /reject_daftar <orderId> <сабаб>');
+          return;
+        }
+        try {
+          await this.daftarService.updateReviewStatus({
+            orderId,
+            reviewerId: ctx.user.id,
+            status: DaftarStatus.NEEDS_CORRECTION,
+            comment: reason,
+          });
+          await ctx.reply('✅ Буюртма сабаби кўрсатилиб, сотувчига қайтарилди!');
+        } catch (err) {
+          await ctx.reply(`Хатолик: ${(err as Error).message}`);
+        }
+        return;
+      }
+
+      // Search by Order number or receipt
+      if (text.startsWith('ORD-')) {
+        try {
+          const order = await this.ordersService.getOrderByNumber(text, ctx.user.id);
+          await this.renderOrderCard(ctx, order.id);
+        } catch (err) {
+          await ctx.reply(`Буюртма топилмади: ${text}`);
+        }
+        return;
+      }
+
+      if (text.startsWith('PAY-')) {
+        try {
+          const payment = await this.paymentsService.getPaymentByReceipt(text);
+          await ctx.reply(
+            `🧾 <b>Тўлов чеки: ${payment.receiptNumber}</b>\n` +
+            `Буюртма: ${payment.sale.order.orderNumber}\n` +
+            `Харидор: ${payment.sale.buyer.fullName}\n` +
+            `Усул: ${payment.method}\n` +
+            `Валюта: ${payment.currency} (${payment.originalAmount})\n` +
+            `Ҳисобланган сумма: ${DecimalUtil.formatMoney(payment.calculatedAmount)}\n` +
+            `Ҳолат: ${payment.status}\n` +
+            `Сана: ${DateUtil.formatTashkent(payment.createdAt)}`,
+            { parse_mode: 'HTML' },
+          );
+        } catch (err) {
+          await ctx.reply(`Чек топилмади: ${text}`);
+        }
+        return;
+      }
+    });
+  }
+
+  // ===================== BUTTON HANDLERS =====================
+
+  private async handleNewOrderButton(ctx: BotContext) {
+    // Check role: SELLER or SUPER_ADMIN
+    const isSeller =
+      ctx.userRoles?.includes(RoleName.SELLER) ||
+      ctx.userRoles?.includes(RoleName.SUPER_ADMIN);
+
+    if (!isSeller) {
+      await ctx.reply(BOT_TEXTS.accessDenied);
+      return;
+    }
+
+    // Check existing draft
+    const draft = await this.ordersService.getDraft(ctx.user.id);
+    if (draft) {
+      await ctx.reply(
+        `Сизда сақланган қоралама буюртма мавжуд (босқич: ${draft.step}). Давом эттирасизми ёки янгидан бошлайсизми?`,
+        {
+          reply_markup: new InlineKeyboard()
+            .text('▶️ Давом эттириш', `resume_draft:${draft.id}`)
+            .text('🗑 Янгидан бошлаш', `discard_draft:${draft.id}`),
+        },
+      );
+      return;
+    }
+
+    await ctx.reply(
+      '📝 Янги буюртма очиш учун 1–20-бандларни тўлдириш бошланади.\nАсосий маълумотларни киритиш учун «Дастурни танланг»:',
+    );
+  }
+
+  private async handleDraftsButton(ctx: BotContext) {
+    const draft = await this.ordersService.getDraft(ctx.user.id);
+    if (!draft) {
+      await ctx.reply('Сизда сақланган қораламалар мавжуд эмас.');
+      return;
+    }
+    await ctx.reply(
+      `📝 Сизнинг қораламангиз:\nБосқич: ${draft.step}\nОхирги сақланган вақт: ${DateUtil.formatTashkent(draft.updatedAt)}`,
+    );
+  }
+
+  private async handleMyOrdersButton(ctx: BotContext) {
+    const orders = await this.ordersService.listMyOrders(ctx.user.id);
+    if (orders.length === 0) {
+      await ctx.reply('Сизга тегишли буюртмалар топилмади.');
+      return;
+    }
+
+    let text = '📋 <b>Сизнинг буюртмаларингиз:</b>\n\n';
+    const ik = new InlineKeyboard();
+
+    for (const o of orders.slice(0, 10)) {
+      text += `• <b>${o.orderNumber}</b> | ${o.customer.fullName} | ${o.status}\n  Сумма: ${DecimalUtil.formatMoney(o.totalPrice)}\n\n`;
+      ik.text(`📄 ${o.orderNumber}`, `view_order:${o.id}`).row();
+    }
+
+    await ctx.reply(text, { reply_markup: ik, parse_mode: 'HTML' });
+  }
+
+  private async handleIncomingQueueButton(ctx: BotContext) {
+    const isOperator =
+      ctx.userRoles?.includes(RoleName.CONTINUATION_OPERATOR) ||
+      ctx.userRoles?.includes(RoleName.SUPER_ADMIN);
+
+    if (!isOperator) {
+      await ctx.reply(BOT_TEXTS.accessDenied);
+      return;
+    }
+
+    const queue = await this.assignmentsService.listIncomingQueue(ctx.user.id);
+    if (queue.length === 0) {
+      await ctx.reply('📥 Қабул қилиш навбатида ҳозирча буюртмалар йўқ.');
+      return;
+    }
+
+    let text = '📥 <b>Қабул қилиш кутилаётган буюртмалар:</b>\n\n';
+    const ik = new InlineKeyboard();
+
+    for (const o of queue) {
+      text += `• <b>${o.orderNumber}</b> (${o.customer.fullName})\n  Сотувчи: ${o.seller.firstName || ''}\n  Сумма: ${DecimalUtil.formatMoney(o.totalPrice)}\n\n`;
+      ik.text(`✅ Қабул қилиш (${o.orderNumber})`, `accept_order:${o.id}`).row();
+    }
+
+    await ctx.reply(text, { reply_markup: ik, parse_mode: 'HTML' });
+  }
+
+  private async handleDaftarReviewButton(ctx: BotContext) {
+    const isReviewer =
+      ctx.userRoles?.includes(RoleName.DAFTAR_REVIEWER) ||
+      ctx.userRoles?.includes(RoleName.SUPER_ADMIN);
+
+    if (!isReviewer) {
+      await ctx.reply(BOT_TEXTS.accessDenied);
+      return;
+    }
+
+    const pending = await this.daftarService.listPendingReviews();
+    if (pending.length === 0) {
+      await ctx.reply('✅ Барча буюртмалар кўриб чиқилган, навбат бўш.');
+      return;
+    }
+
+    let text = '📝 <b>Дафтар тасдиғи кутилаётган буюртмалар:</b>\n\n';
+    const ik = new InlineKeyboard();
+
+    for (const o of pending.slice(0, 5)) {
+      text += `• <b>${o.orderNumber}</b> | ${o.customer.fullName} | Сотувчи: ${o.seller.firstName || ''}\n`;
+      ik.text(`✅ Тасдиқлаш`, `review_daftar:${o.id}:${DaftarStatus.APPROVED}`)
+        .text(`❌ Қайтариш`, `review_daftar:${o.id}:${DaftarStatus.NEEDS_CORRECTION}`)
+        .row();
+    }
+
+    await ctx.reply(text, { reply_markup: ik, parse_mode: 'HTML' });
+  }
+
+  private async handleDebtsButton(ctx: BotContext) {
+    const isOperator =
+      ctx.userRoles?.includes(RoleName.CONTINUATION_OPERATOR) ||
+      ctx.userRoles?.includes(RoleName.SUPER_ADMIN);
+
+    if (!isOperator) {
+      await ctx.reply(BOT_TEXTS.accessDenied);
+      return;
+    }
+
+    const debts = await this.debtsService.listActiveDebts(ctx.user.id);
+    if (debts.length === 0) {
+      await ctx.reply('💳 Ҳозирча очиқ қарздорликлар мавжуд эмас.');
+      return;
+    }
+
+    let text = '💳 <b>Фаол қарздорликлар рўйхати:</b>\n\n';
+    for (const d of debts.slice(0, 10)) {
+      const dueStr = DateUtil.formatDateTashkent(d.debtDueDate);
+      text += `• <b>${d.order.orderNumber}</b> | Харидор: ${d.buyer.fullName}\n  Қолдиқ қарз: <b>${DecimalUtil.formatMoney(d.remainingAmount)}</b>\n  Муддат: ${dueStr}\n\n`;
+    }
+
+    await ctx.reply(text, { parse_mode: 'HTML' });
+  }
+
+  private async handleReportsButton(ctx: BotContext) {
+    const isSuperAdmin = ctx.userRoles?.includes(RoleName.SUPER_ADMIN);
+    if (!isSuperAdmin) {
+      await ctx.reply(BOT_TEXTS.accessDenied);
+      return;
+    }
+
+    const report = await this.reportsService.generateFinancialReport();
+    const msg =
+      `📊 <b>Молиявий ҳисобот:</b>\n\n` +
+      `<b>Буюртмалар:</b> ${report.orders.totalOrders} та\n` +
+      `Умумий прайс суммаси: ${report.orders.totalOrderPrice}\n\n` +
+      `<b>Сотувлар:</b> ${report.sales.totalSales} та\n` +
+      `Ҳақиқий келишилган савдо: ${report.sales.actualSalesTotal}\n` +
+      `Очиқ қарздорлик: ${report.sales.totalOpenDebt}\n` +
+      `Муддати ўтган қарздорлик: ${report.sales.totalOverdueDebt}\n\n` +
+      `<b>Тўловлар:</b>\n` +
+      `Сўмда: ${report.payments.uzsCashBank}\n` +
+      `Долларда: ${report.payments.usdTotal}\n` +
+      `Жами UZS эквиваленти: ${report.payments.totalCalculatedUzs}\n\n` +
+      `Бекор қилинган тўловлар (Reversals): ${report.reversals.count} та (${report.reversals.totalReversedAmount})`;
+
+    await ctx.reply(msg, { parse_mode: 'HTML' });
+  }
+
+  private async handleManagementButton(ctx: BotContext) {
+    const isSuperAdmin = ctx.userRoles?.includes(RoleName.SUPER_ADMIN);
+    if (!isSuperAdmin) {
+      await ctx.reply(BOT_TEXTS.accessDenied);
+      return;
+    }
+
+    const pendingUsers = await this.usersService.listPendingUsers();
+    await ctx.reply(
+      `⚙️ <b>Бошқарув панели:</b>\n\nТасдиқ кутилаётган фойдаланувчилар: ${pendingUsers.length} та\n` +
+      `Фойдаланувчини тасдиқлаш учун:\n<code>/approve_user &lt;tgId&gt; SELLER,CONTINUATION_OPERATOR</code>`,
+      { parse_mode: 'HTML' },
+    );
+  }
+
+  private async showHandoffOperators(ctx: BotContext, orderId: string) {
+    const operators = await this.usersService.getContinuationOperators();
+    if (operators.length === 0) {
+      await ctx.reply('Тизимда фаол 2-босқич ходимлари топилмади.');
+      return;
+    }
+
+    const ik = new InlineKeyboard();
+    for (const op of operators) {
+      ik.text(`👤 ${op.firstName || ''} ${op.lastName || ''}`, `assign_to:${orderId}:${op.id}`).row();
+    }
+
+    await ctx.reply('Илтимос, буюртмани қабул қиладиган операторни танланг:', { reply_markup: ik });
+  }
+
+  private async renderOrderCard(ctx: BotContext, orderId: string) {
+    try {
+      const order = await this.ordersService.getOrderById(orderId, ctx.user.id);
+      const isSuperAdmin = ctx.userRoles?.includes(RoleName.SUPER_ADMIN);
+      const isSeller = order.sellerId === ctx.user.id || isSuperAdmin;
+
+      let msg =
+        `📄 <b>Буюртма карточкаси: ${order.orderNumber}</b>\n` +
+        `Ҳолат: <b>${order.status}</b>\n` +
+        `Сана: ${DateUtil.formatTashkent(order.businessDate)}\n` +
+        `Сотувчи: ${order.seller.firstName || ''} ${order.seller.lastName || ''}\n` +
+        `Дастур: ${order.program.name}\n` +
+        `Магазин: ${order.store.name}\n` +
+        `Мижоз: ${order.customer.fullName} (${order.customer.phone1})\n` +
+        `Умумий лимит: ${DecimalUtil.formatMoney(order.customer.generalLimit)}\n` +
+        `Ечиладиган лимит: ${DecimalUtil.formatMoney(order.customer.withdrawableLimit)}\n` +
+        `Клиентга бериладиган: ${DecimalUtil.formatMoney(order.clientPayoutAmount)}\n` +
+        `Товарлар сони: ${order.totalQuantity} та\n` +
+        `Прайс жами: ${DecimalUtil.formatMoney(order.totalPrice)}\n\n`;
+
+      const latestReview = order.daftarReviews[0];
+      const reviewStatus = latestReview?.status || 'PENDING';
+      msg += `Дафтар тасдиғи: <b>${DAFTAR_STATUS_TEXTS[reviewStatus]}</b>\n`;
+
+      const ik = new InlineKeyboard();
+
+      // Show Stage 2 handoff button if ready
+      if (
+        order.program.requiresContinuation &&
+        order.status === OrderStatus.READY_FOR_HANDOFF &&
+        isSeller
+      ) {
+        ik.text('➡️ Буюртмани ўтказиш', `handoff_order:${order.id}`).row();
+      }
+
+      // Passport secure access link
+      const passportAtt = order.attachments.find(
+        (a) => a.type === 'PASSPORT_PHOTO',
+      );
+      if (passportAtt) {
+        ik.text('🔒 Паспорт фотоси', `view_passport:${passportAtt.id}`).row();
+      }
+
+      await ctx.reply(msg, { reply_markup: ik, parse_mode: 'HTML' });
+    } catch (err) {
+      await ctx.reply(`Хатолик: ${(err as Error).message}`);
+    }
+  }
+
+  // ===================== TRANSACTIONAL OUTBOX DISPATCHER =====================
+
+  private async dispatchOutboxEvents() {
+    const pendingEvents = await this.outboxService.getPendingEvents(15);
+    for (const event of pendingEvents) {
+      const payload: any = event.payload;
+      try {
+        const targetChatId = payload.recipientTelegramId || payload.chatId;
+        if (targetChatId) {
+          await this.bot.api.sendMessage(targetChatId, payload.message, {
+            reply_markup: payload.replyMarkup,
+            parse_mode: 'HTML',
+          });
+        }
+        await this.outboxService.markSent(event.id);
+      } catch (e) {
+        await this.outboxService.markFailed(event.id, (e as Error).message);
+      }
+    }
+  }
+}
