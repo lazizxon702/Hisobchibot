@@ -127,3 +127,24 @@ npm run test
 
 - `GET /health` — Тизимнинг ишлаётганлигини текшириш (Liveness).
 - `GET /health/ready` — PostgreSQL ва Redis уланишини текшириш (Readiness).
+
+---
+
+## 🚂 Railway.app orqali Deploy qilish
+
+1. [Railway.app](https://railway.app) ga kiring va **New Project** yarating.
+2. **Deploy from GitHub repo** tanlab, `Hisobchibot` repozitoriyasini ulang.
+3. Loyihaga **PostgreSQL** qo'shing (`+ New` -> `Database` -> `Add PostgreSQL`).
+4. (Ixtiyoriy) **Redis** qo'shing (`+ New` -> `Database` -> `Add Redis`).
+5. Web xizmatining **Variables** bo'limiga quyidagi muhit o'zgaruvchilarini kiriting:
+   - `BOT_TOKEN`: Telegram bot tokeni (masalan: `9167571167:AAG9nOKq8IoKV0h8wfl2xKSeXhoYYiwppz0`)
+   - `SUPER_ADMIN_TELEGRAM_ID`: Sizning Telegram ID raqamingiz (`7146730534`)
+   - `DATABASE_URL`: `${{Postgres.DATABASE_URL}}` (Railway avtomatik ulaydi)
+   - `REDIS_URL`: `${{Redis.REDIS_URL}}` (yoki bo'sh qoldirilsa avtomatik fallback ishlaydi)
+   - `PORT`: `3000`
+   - `NODE_ENV`: `production`
+   - `APP_TIMEZONE`: `Asia/Tashkent`
+   - `STORAGE_DRIVER`: `local`
+6. `railway.json` va `Procfile` fayllari tufayli Railway avtomatik ravishda:
+   `npx prisma migrate deploy && node dist/src/main.js` buyrug'i orqali ma'lumotlar bazasini yangilab, botni ishga tushiradi!
+

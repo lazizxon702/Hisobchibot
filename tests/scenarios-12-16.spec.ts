@@ -154,7 +154,7 @@ describe('Scenarios 12 - 16 (Payments, Multi-currency, Idempotency & Overpayment
 
     expect(payment.currency).toBe(Currency.USD);
     expect(payment.originalAmount.toString()).toBe('1000');
-    expect(payment.exchangeRate.toString()).toBe('12850');
+    expect(payment.exchangeRate?.toString()).toBe('12850');
     expect(payment.calculatedAmount.toString()).toBe('12850000');
   });
 

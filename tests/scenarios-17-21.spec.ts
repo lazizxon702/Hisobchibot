@@ -246,7 +246,7 @@ describe('Scenarios 17 - 21 (Reversals, Debt Settlement, Draft Persistence & Pri
     const restoredDraft = await newOrdersService.getDraft(seller.id);
     expect(restoredDraft).toBeDefined();
     expect(restoredDraft?.step).toBe('STEP_CUSTOMER_LIMIT');
-    expect(restoredDraft?.formData.customerName).toBe('Нодирбек');
+    expect((restoredDraft?.formData as any)?.customerName).toBe('Нодирбек');
   });
 
   // 20. Рухсатсиз паспорт файли очилмайди.
