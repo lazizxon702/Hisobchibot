@@ -13,6 +13,7 @@ import { AuditService } from '../audit/audit.service';
 import { OutboxService } from '../../infrastructure/outbox/outbox.service';
 import { RedisService } from '../../infrastructure/redis/redis.service';
 import { DecimalUtil } from '../../common/decimal.util';
+import { DateUtil } from '../../common/date.util';
 import {
   PaymentMethod,
   Currency,
@@ -51,6 +52,20 @@ export class PaymentsService {
     private readonly outbox: OutboxService,
     private readonly redis: RedisService,
   ) {}
+
+  async getReceiptsGroupId(): Promise<string | null> {
+    if (process.env.RECEIPTS_GROUP_ID) {
+      return process.env.RECEIPTS_GROUP_ID;
+    }
+    try {
+      const setting = await this.prisma.systemSetting.findUnique({
+        where: { key: 'RECEIPTS_GROUP_ID' },
+      });
+      return setting?.value || null;
+    } catch {
+      return null;
+    }
+  }
 
   /**
    * Records a payment against a sale.
@@ -94,6 +109,7 @@ export class PaymentsService {
         const sale = await tx.sale.findUnique({
           where: { id: dto.saleId },
           include: {
+            buyer: true,
             order: { include: { seller: true } },
             payments: { where: { status: TransactionStatus.CONFIRMED } },
           },
@@ -199,6 +215,41 @@ export class PaymentsService {
           },
           tx,
         );
+
+        // Send Official Receipt to Telegram Group
+        const receiptsGroupId = await this.getReceiptsGroupId();
+        if (receiptsGroupId) {
+          const groupReceiptMsg =
+            `🧾 <b>РАСМИЙ ТЎЛОВ ЧЕКИ</b>\n` +
+            `━━━━━━━━━━━━━━━━━━━━\n` +
+            `• Чек рақами: <b>${payment.receiptNumber}</b>\n` +
+            `• Буюртма ID: <b>${sale.order.orderNumber}</b>\n` +
+            `• Ҳолати: <b>ТАСДИҚЛАНДИ (CONFIRMED)</b>\n\n` +
+            `👤 <b>Мижоз / Харидор:</b>\n` +
+            `• Исми: <b>${sale.buyer?.fullName || '—'}</b>\n` +
+            `• Телефон: ${sale.buyer?.phone || '—'}\n\n` +
+            `💳 <b>Тўлов тафсилотлари:</b>\n` +
+            `• Усули: <b>${payment.method === PaymentMethod.CASH ? 'Нақд пул' : 'Банк ўтказмаси'}</b>\n` +
+            `• Валюта: <b>${payment.currency}</b>\n` +
+            `• Тўланган: <b>${payment.currency === Currency.USD ? payment.originalAmount + ' USD' : DecimalUtil.formatMoney(payment.calculatedAmount)}</b>\n` +
+            (payment.currency === Currency.USD ? `• Валюта курси: 1 USD = ${DecimalUtil.formatMoney(payment.exchangeRate!)}\n` : '') +
+            `• Ҳисобланган сумма: <b>${DecimalUtil.formatMoney(payment.calculatedAmount)}</b>\n\n` +
+            `📊 <b>Молиявий ҳолат:</b>\n` +
+            `• Жами тўланган: <b>${DecimalUtil.formatMoney(newPaidAmount)}</b>\n` +
+            `• Қолдиқ қарз: <b>${DecimalUtil.formatMoney(newRemaining)}</b>\n` +
+            `• Статус: <b>${newStatus === PaymentStatus.PAID ? '✅ ТЎЛАНДИ (ТЎЛИҚ ЁПИЛДИ)' : '⏳ ҚИСМАН ТЎЛАНДИ'}</b>\n\n` +
+            `🕒 <b>Сана:</b> ${DateUtil.formatTashkent(payment.createdAt)}\n` +
+            `━━━━━━━━━━━━━━━━━━━━`;
+
+          await this.outbox.enqueue(
+            'receipt_group_post',
+            {
+              chatId: receiptsGroupId,
+              message: groupReceiptMsg,
+            },
+            tx,
+          );
+        }
 
         await this.audit.log(
           {
@@ -334,6 +385,29 @@ export class PaymentsService {
         },
         tx,
       );
+
+      // Send Reversal Notice to Telegram Group
+      const receiptsGroupId = await this.getReceiptsGroupId();
+      if (receiptsGroupId) {
+        const groupReversalMsg =
+          `⚠️ <b>ТЎЛОВ БЕКОР ҚИЛИНДИ (REVERSAL)</b>\n` +
+          `━━━━━━━━━━━━━━━━━━━━\n` +
+          `• Чек рақами: <b>${payment.receiptNumber}</b>\n` +
+          `• Бекор қилинган сумма: <b>${DecimalUtil.formatMoney(payment.calculatedAmount)}</b>\n` +
+          `• Қайта тикланган қарз: <b>${DecimalUtil.formatMoney(recalculatedRemaining)}</b>\n` +
+          `• Сабаби: <i>${dto.reason}</i>\n` +
+          `• Вақт: ${DateUtil.formatTashkent(new Date())}\n` +
+          `━━━━━━━━━━━━━━━━━━━━`;
+
+        await this.outbox.enqueue(
+          'reversal_group_post',
+          {
+            chatId: receiptsGroupId,
+            message: groupReversalMsg,
+          },
+          tx,
+        );
+      }
 
       return reversal;
     });

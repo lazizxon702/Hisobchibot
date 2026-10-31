@@ -120,6 +120,24 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
     // 2. Authentication & Approval middleware (Section 3)
     this.bot.use(async (ctx, next) => {
+      // In groups/supergroups, avoid blocking and auto-detect group ID
+      if (ctx.chat?.type === 'group' || ctx.chat?.type === 'supergroup') {
+        try {
+          const current = await this.prisma.systemSetting.findUnique({
+            where: { key: 'RECEIPTS_GROUP_ID' },
+          });
+          if (!current) {
+            await this.prisma.systemSetting.upsert({
+              where: { key: 'RECEIPTS_GROUP_ID' },
+              update: { value: ctx.chat.id.toString(), description: ctx.chat.title || 'Чеклар гуруҳи' },
+              create: { key: 'RECEIPTS_GROUP_ID', value: ctx.chat.id.toString(), description: ctx.chat.title || 'Чеклар гуруҳи' },
+            });
+            this.logger.log(`Receipts group auto-registered: ${ctx.chat.id} (${ctx.chat.title})`);
+          }
+        } catch {}
+        return next();
+      }
+
       if (!ctx.from) return next();
 
       try {
@@ -302,6 +320,29 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
             txt += `• <b>${s.firstName || ''} ${s.lastName || ''}</b>\n  ID: <code>${s.telegramId}</code>\n  Роллар: <i>${roleList || 'Ходим'}</i>\n\n`;
           }
           await ctx.reply(txt, { parse_mode: 'HTML' });
+        } else if (data === 'mgmt_receipts_group') {
+          const setting = await this.prisma.systemSetting.findUnique({
+            where: { key: 'RECEIPTS_GROUP_ID' },
+          });
+          const currentId = process.env.RECEIPTS_GROUP_ID || setting?.value;
+          if (currentId) {
+            await ctx.reply(
+              `📢 <b>Уланган чеклар гуруҳи:</b>\n\n` +
+              `• Гуруҳ ID: <code>${currentId}</code>\n` +
+              `• Номи: <b>${setting?.description || 'Чеклар гуруҳи'}</b>\n\n` +
+              `Янги гуруҳни улаш учун керакли гуруҳ ичида <code>/set_receipts_group</code> буйруғини юборинг.`,
+              { parse_mode: 'HTML' },
+            );
+          } else {
+            await ctx.reply(
+              `📢 <b>Чеклар гуруҳи ҳали уланмаган!</b>\n\n` +
+              `Гуруҳни улаш учун:\n` +
+              `1. Ботни гуруҳга қўшинг ва админ қилинг.\n` +
+              `2. Гуруҳ ичига <code>/set_receipts_group</code> буйруғини юборинг.\n` +
+              `Бот автоматик тарзда барча чекларни шу гуруҳга юборишни бошлайди!`,
+              { parse_mode: 'HTML' },
+            );
+          }
         } else if (data.startsWith('view_order:')) {
           const orderId = data.split(':')[1];
           await this.renderOrderCard(ctx, orderId);
@@ -318,6 +359,57 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     // Text messages for search and commands
     this.bot.on('message:text', async (ctx) => {
       const text = ctx.message.text.trim();
+
+      // /group_id command to get group chatId
+      if (text === '/group_id' || text === '/chat_id') {
+        await ctx.reply(
+          `🆔 <b>Ушбу чат маълумотлари:</b>\n` +
+          `• Chat ID: <code>${ctx.chat?.id}</code>\n` +
+          `• Номи: <b>${ctx.chat?.title || 'Шахсий чат'}</b>\n` +
+          `• Тури: <i>${ctx.chat?.type}</i>`,
+          { parse_mode: 'HTML' },
+        );
+        return;
+      }
+
+      // /set_receipts_group command
+      if (text.startsWith('/set_receipts_group')) {
+        const isGroup = ctx.chat?.type === 'group' || ctx.chat?.type === 'supergroup';
+        let targetGroupId: string | null = null;
+        let groupTitle = ctx.chat?.title || 'Чеклар гуруҳи';
+
+        if (isGroup) {
+          targetGroupId = ctx.chat!.id.toString();
+        } else {
+          const arg = text.replace('/set_receipts_group', '').trim();
+          if (arg) {
+            targetGroupId = arg;
+          }
+        }
+
+        if (!targetGroupId) {
+          await ctx.reply(
+            `Гуруҳни созлаш учун:\n1) Ушбу гуруҳнинг ичида <code>/set_receipts_group</code> ёзинг, ёки\n2) Шахсий чатда <code>/set_receipts_group [GROUP_CHAT_ID]</code> ёзинг.`,
+            { parse_mode: 'HTML' },
+          );
+          return;
+        }
+
+        await this.prisma.systemSetting.upsert({
+          where: { key: 'RECEIPTS_GROUP_ID' },
+          update: { value: targetGroupId, description: groupTitle },
+          create: { key: 'RECEIPTS_GROUP_ID', value: targetGroupId, description: groupTitle },
+        });
+
+        await ctx.reply(
+          `✅ <b>Чеклар гуруҳи муваффақиятли созланди!</b>\n\n` +
+          `• Гуруҳ ID: <code>${targetGroupId}</code>\n` +
+          `• Номи: <b>${groupTitle}</b>\n\n` +
+          `Энди барча тўлов чеклари ва янги буюртмалар автоматик тарзда ушбу гуруҳга юборилади! 🧾`,
+          { parse_mode: 'HTML' },
+        );
+        return;
+      }
 
       // /add_admin command
       if (text.startsWith('/add_admin ')) {
@@ -538,6 +630,30 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
           });
 
           await this.ordersService.clearDraft(ctx.user.id);
+
+          // Post announcement to receipts group
+          try {
+            const groupSetting = await this.prisma.systemSetting.findUnique({
+              where: { key: 'RECEIPTS_GROUP_ID' },
+            });
+            const groupId = process.env.RECEIPTS_GROUP_ID || groupSetting?.value;
+            if (groupId) {
+              await this.outboxService.enqueue('order_group_post', {
+                chatId: groupId,
+                message:
+                  `📋 <b>ЯНГИ БУЮРТМА РАСМИЙЛАШТИРИЛДИ</b>\n` +
+                  `━━━━━━━━━━━━━━━━━━━━\n` +
+                  `• Буюртма №: <b>${order.orderNumber}</b>\n` +
+                  `• Мижоз: <b>${currentData.customer.fullName}</b> (${currentData.customer.phone1})\n` +
+                  `• Жами прайс: <b>${DecimalUtil.formatMoney(order.totalPrice)}</b>\n` +
+                  `• Ечиладиган лимит: <b>${DecimalUtil.formatMoney(currentData.customer.withdrawableLimit)}</b>\n` +
+                  `• Ҳолати: <b>${order.status}</b>\n` +
+                  `• Сотувчи: <b>${ctx.user?.firstName || 'Ходим'}</b>\n` +
+                  `• Вақт: ${DateUtil.formatTashkent(new Date())}\n` +
+                  `━━━━━━━━━━━━━━━━━━━━`,
+              });
+            }
+          } catch {}
 
           const ik = new InlineKeyboard();
           if (order.status === OrderStatus.READY_FOR_HANDOFF) {
@@ -809,7 +925,8 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       .text(`👑 Админлар (${admins.length})`, 'mgmt_list_admins')
       .text(`⏳ Кутилаётганлар (${pendingUsers.length})`, 'mgmt_pending')
       .row()
-      .text('👥 Барча ходимлар', 'mgmt_list_staff');
+      .text('👥 Барча ходимлар', 'mgmt_list_staff')
+      .text('📢 Чеклар гуруҳи', 'mgmt_receipts_group');
 
     await ctx.reply(
       `⚙️ <b>Бошқарув ва ходимлар панели:</b>\n\n` +
