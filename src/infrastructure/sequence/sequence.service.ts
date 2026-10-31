@@ -40,4 +40,18 @@ export class SequenceService {
     const padded = nextVal.toString().padStart(6, '0');
     return `PAY-${year}-${padded}`;
   }
+
+  async generateCheckNumber(): Promise<number> {
+    const result: Array<{ currentValue: bigint }> = await this.prisma.$queryRawUnsafe(
+      `INSERT INTO "IdSequence" ("name", "currentValue")
+       VALUES ('CHECK_SEQ', 3531)
+       ON CONFLICT ("name")
+       DO UPDATE SET "currentValue" = "IdSequence"."currentValue" + 1
+       RETURNING "currentValue";`,
+    );
+    if (result && result.length > 0) {
+      return Number(result[0].currentValue);
+    }
+    return 3531;
+  }
 }

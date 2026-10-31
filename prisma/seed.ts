@@ -24,9 +24,11 @@ async function main() {
 
   // 2. Seed Financing Programs
   const programs = [
-    { name: 'Trust 1 (Ishonch)', requiresContinuation: false, code: 'TRUST_1' },
-    { name: 'Alif 6 ойлик', requiresContinuation: false, code: 'ALIF_6M' },
-    { name: 'Alif Кодирака', requiresContinuation: false, code: 'ALIF_KODIRAKA' },
+    { name: 'Payme', requiresContinuation: true, code: 'PAYME' },
+    { name: 'Alif', requiresContinuation: false, code: 'ALIF' },
+    { name: 'Anorbank', requiresContinuation: true, code: 'ANOR' },
+    { name: 'Ishonch', requiresContinuation: false, code: 'ISHONCH' },
+    { name: 'Uzum Nasiya', requiresContinuation: true, code: 'UZUM' },
     { name: 'Бошқа', requiresContinuation: true, code: 'OTHER' },
   ];
 
@@ -42,7 +44,12 @@ async function main() {
   // 3. Seed Sample Stores
   const stores = [
     {
-      name: 'Малика Савдо Маркази (Дўкон 12)',
+      name: 'Planet Phone',
+      address: 'Тошкент ш., Малика савдо мажмуаси',
+      phone: '+998901234567',
+    },
+    {
+      name: 'Малика Савдо Маркази (12-дўкон)',
       address: 'Тошкент ш., Шайхонтоҳур т., Кичик Ҳалқа Йўли',
       phone: '+998901234567',
     },
@@ -65,16 +72,16 @@ async function main() {
   // 4. Seed Sample Agencies & Employees
   const agencies = [
     {
-      name: 'Ishonch Agency',
-      ownerName: 'Каримов Сардор',
+      name: 'Давлатбек',
+      ownerName: 'Давлатбек',
       phone: '+998931112233',
-      employees: ['Алимов Жасур', 'Бозоров Дилшод'],
+      employees: ['Гўзал', 'Алишер'],
     },
     {
-      name: 'Grand Finance',
-      ownerName: 'Тоҳиров Улуғбек',
+      name: 'Сардор',
+      ownerName: 'Сардор',
       phone: '+998973334455',
-      employees: ['Раҳимов Бобур'],
+      employees: ['Умид', 'Жасур'],
     },
   ];
 

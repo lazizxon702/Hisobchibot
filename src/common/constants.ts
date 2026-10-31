@@ -12,9 +12,9 @@ export const BOT_TEXTS = {
 };
 
 export const MENU_BUTTONS = {
-  newOrder: '➕ Янги буюртма',
+  newOrder: '🧾 Янги чек уриш',
   drafts: '📝 Қораламалар',
-  myOrders: '📋 Менинг буюртмаларим',
+  myOrders: '📋 Менинг чекларим',
   incomingQueue: '📥 Қабул қилиш навбати',
   daftarReview: '✅ Дафтар тасдиғи',
   inventory: '📦 Товарлар',

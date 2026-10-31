@@ -27,10 +27,64 @@ import {
 } from '../common/constants';
 import { FinancingProgramsService } from '../modules/financing-programs/financing-programs.service';
 import { StoresService } from '../modules/stores/stores.service';
+import { AgenciesService } from '../modules/agencies/agencies.service';
 import { DecimalUtil } from '../common/decimal.util';
 import { DateUtil } from '../common/date.util';
 import { RoleName, OrderStatus, DaftarStatus, InventoryUnitStatus, AttachmentType } from '@prisma/client';
 import { Decimal } from 'decimal.js';
+
+export function formatReceiptText(order: {
+  checkNumber?: number | null;
+  omborStatus?: string | null;
+  createdAt: Date;
+  seller: { firstName?: string | null; lastName?: string | null; telegramId?: bigint | number | string | null };
+  program: { name: string };
+  totalPrice: any;
+  agentPercentage: any;
+  clientPayoutAmount: any;
+  productName?: string | null;
+  store: { name: string };
+  agency?: { name: string } | null;
+  agencyEmployee?: { fullName: string } | null;
+  id: string;
+}): string {
+  const checkNum = order.checkNumber ? `#${order.checkNumber}` : `#${order.id.slice(0, 6)}`;
+  const omborStatus = order.omborStatus || 'Tasdiqlash kutilmoqda';
+  const isConfirmed = omborStatus.includes('Tasdiqlandi');
+  const isCancelled = omborStatus.includes('Bekor');
+  const omborIcon = isConfirmed ? '✅' : (isCancelled ? '❌' : '⏳');
+
+  const createdTime = DateUtil.formatTashkent(order.createdAt, 'DD.MM.YYYY HH:mm:ss');
+  const sellerFullName = [order.seller.firstName, order.seller.lastName].filter(Boolean).join(' ') || 'Савдочи';
+  const sellerTgId = order.seller.telegramId ? ` (${order.seller.telegramId})` : '';
+  const ilova = order.program.name;
+  const limitFormatted = DecimalUtil.formatMoney(order.totalPrice, "so'm");
+  const foizVal = order.agentPercentage ? Number(order.agentPercentage).toString() : '0';
+  const foizFormatted = `${foizVal}%`;
+  const calculatedFormatted = DecimalUtil.formatMoney(order.clientPayoutAmount, "so'm");
+  const products = order.productName || `${ilova} — 1 ta`;
+  const productsFormatted = products.startsWith('•') ? products : `• ${products}`;
+  const dokan = order.store.name;
+  const agent = order.agency?.name || 'Agentsiz';
+  const agentXodimi = order.agencyEmployee?.fullName || '—';
+  const uuid = order.id;
+
+  return `Yangi chek ${checkNum}
+${omborIcon} Ombor statusi: ${omborStatus}
+
+🕐 Urilgan vaqt: ${createdTime}
+👤 Savdochi: ${sellerFullName}${sellerTgId}
+📱 Ilova: ${ilova}
+💰 Limit: ${limitFormatted}
+📊 Foiz: ${foizFormatted}
+💵 Hisoblangan summa: ${calculatedFormatted}
+📦 Mahsulotlar:
+${productsFormatted}
+🏪 Do'kon: ${dokan}
+🤝 Agent: ${agent}
+👔 Agent xodimi: ${agentXodimi}
+🆔 ${uuid}`;
+}
 
 export interface BotContext extends Context {
   user?: any;
@@ -58,6 +112,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     private readonly outboxService: OutboxService,
     private readonly programsService: FinancingProgramsService,
     private readonly storesService: StoresService,
+    private readonly agenciesService: AgenciesService,
   ) {
     const token =
       process.env.BOT_TOKEN || '9167571167:AAG9nOKq8IoKV0h8wfl2xKSeXhoYYiwppz0';
@@ -172,7 +227,11 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     });
 
     // Main menu buttons routing
-    this.bot.hears(MENU_BUTTONS.newOrder, async (ctx) => {
+    this.bot.hears([MENU_BUTTONS.newOrder, '➕ Янги буюртма', '🧾 Янги чек уриш', 'Янги чек'], async (ctx) => {
+      await this.handleNewOrderButton(ctx);
+    });
+
+    this.bot.command(['check', 'new_order', 'yangi_chek'], async (ctx) => {
       await this.handleNewOrderButton(ctx);
     });
 
@@ -242,42 +301,322 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
             });
             await ctx.reply(`✅ Дафтар тасдиғи «${DAFTAR_STATUS_TEXTS[status]}» ҳолатига ўтказилди!`);
           }
-        } else if (data.startsWith('select_prog:')) {
-          const programId = data.split(':')[1];
+        } else if (data.startsWith('chk_prog:') || data.startsWith('select_prog:')) {
+          const programId = data.replace('chk_prog:', '').replace('select_prog:', '');
           const program = await this.programsService.getById(programId);
-          await this.ordersService.saveDraft(ctx.user.id, 'SELECT_STORE', { programId });
+          await this.ordersService.saveDraft(ctx.user.id, 'SELECT_STORE', {
+            programId: program.id,
+            programName: program.name,
+          });
 
           const stores = await this.storesService.list();
           const ik = new InlineKeyboard();
           for (const s of stores) {
-            ik.text(`🏪 ${s.name}`, `select_store:${s.id}`).row();
+            ik.text(`🏪 ${s.name}`, `chk_store:${s.id}`).row();
           }
 
-          await ctx.reply(
-            `✅ Дастур танланди: <b>${program.name}</b>\n\n` +
-            `<b>2-босқич:</b> Савдо филиали / дўконни танланг:`,
-            { reply_markup: ik, parse_mode: 'HTML' },
+          await this.safeEditOrReply(
+            ctx,
+            `🏪 <b>2-босқич: Дўконни танланг:</b>\n\n` +
+            `• Танланган илова: <b>${program.name}</b>\n\n` +
+            `<i>(Савдо амалга оширилган дўкон/филиални танланг)</i>`,
+            ik,
           );
-        } else if (data.startsWith('select_store:')) {
-          const storeId = data.split(':')[1];
+        } else if (data.startsWith('chk_store:') || data.startsWith('select_store:')) {
+          const storeId = data.replace('chk_store:', '').replace('select_store:', '');
           const store = await this.storesService.getById(storeId);
           const draft = await this.ordersService.getDraft(ctx.user.id);
           const currentData = (draft?.formData as any) || {};
-          await this.ordersService.saveDraft(ctx.user.id, 'INPUT_CUSTOMER', {
+
+          await this.ordersService.saveDraft(ctx.user.id, 'SELECT_AGENT', {
             ...currentData,
-            storeId,
+            storeId: store.id,
+            storeName: store.name,
           });
 
+          const agencies = await this.agenciesService.list();
+          const ik = new InlineKeyboard();
+          for (const ag of agencies) {
+            ik.text(`🤝 ${ag.name}`, `chk_agent:${ag.id}`).row();
+          }
+          ik.text(`🚫 Агентсиз`, `chk_agent:none`).row();
+
+          await this.safeEditOrReply(
+            ctx,
+            `🤝 <b>3-босқич: Агентни танланг:</b>\n\n` +
+            `• Илова: <b>${currentData.programName}</b>\n` +
+            `• Дўкон: <b>${store.name}</b>\n\n` +
+            `<i>(Агентни танланг ёки «Агентсиз» тугмасини босинг)</i>`,
+            ik,
+          );
+        } else if (data.startsWith('chk_agent:')) {
+          const agencyId = data.split(':')[1];
+          const draft = await this.ordersService.getDraft(ctx.user.id);
+          const currentData = (draft?.formData as any) || {};
+
+          if (agencyId === 'none') {
+            const updatedData = {
+              ...currentData,
+              agencyId: null,
+              agencyName: 'Agentsiz',
+              agencyEmployeeId: null,
+              agencyEmployeeName: '—',
+            };
+            await this.ordersService.saveDraft(ctx.user.id, 'SELECT_PERCENTAGE', updatedData);
+            await this.renderStepPercentage(ctx, updatedData);
+            return;
+          }
+
+          const agency = await this.agenciesService.getById(agencyId);
+          const employees = await this.agenciesService.getEmployeesByAgency(agencyId);
+
+          if (!employees || employees.length === 0) {
+            const updatedData = {
+              ...currentData,
+              agencyId: agency.id,
+              agencyName: agency.name,
+              agencyEmployeeId: null,
+              agencyEmployeeName: '—',
+            };
+            await this.ordersService.saveDraft(ctx.user.id, 'SELECT_PERCENTAGE', updatedData);
+            await this.renderStepPercentage(ctx, updatedData);
+            return;
+          }
+
+          await this.ordersService.saveDraft(ctx.user.id, 'SELECT_EMPLOYEE', {
+            ...currentData,
+            agencyId: agency.id,
+            agencyName: agency.name,
+          });
+
+          const ik = new InlineKeyboard();
+          for (const emp of employees) {
+            ik.text(`👔 ${emp.fullName}`, `chk_emp:${emp.id}`).row();
+          }
+          ik.text(`⏭ Ўтказиб юбориш`, `chk_emp:none`).row();
+
+          await this.safeEditOrReply(
+            ctx,
+            `👔 <b>4-босқич: Агент ходимини танланг:</b>\n\n` +
+            `• Илова: <b>${currentData.programName}</b>\n` +
+            `• Дўкон: <b>${currentData.storeName}</b>\n` +
+            `• Агент: <b>${agency.name}</b>\n\n` +
+            `<i>(Керакли ходимни танланг ёки «Ўтказиб юбориш»ни босинг)</i>`,
+            ik,
+          );
+        } else if (data.startsWith('chk_emp:')) {
+          const empId = data.split(':')[1];
+          const draft = await this.ordersService.getDraft(ctx.user.id);
+          const currentData = (draft?.formData as any) || {};
+
+          let empName = '—';
+          let agencyEmployeeId: string | null = null;
+
+          if (empId !== 'none' && currentData.agencyId) {
+            const employees = await this.agenciesService.getEmployeesByAgency(currentData.agencyId);
+            const found = employees.find((e) => e.id === empId);
+            if (found) {
+              empName = found.fullName;
+              agencyEmployeeId = found.id;
+            }
+          }
+
+          const updatedData = {
+            ...currentData,
+            agencyEmployeeId,
+            agencyEmployeeName: empName,
+          };
+          await this.ordersService.saveDraft(ctx.user.id, 'SELECT_PERCENTAGE', updatedData);
+          await this.renderStepPercentage(ctx, updatedData);
+        } else if (data.startsWith('chk_pct:')) {
+          const pctStr = data.split(':')[1];
+          const draft = await this.ordersService.getDraft(ctx.user.id);
+          const currentData = (draft?.formData as any) || {};
+
+          if (pctStr === 'custom') {
+            await this.ordersService.saveDraft(ctx.user.id, 'INPUT_CUSTOM_PERCENTAGE', currentData);
+            await ctx.reply(
+              `✏️ <b>Фоизни рақамда ёзиб юборинг:</b>\n\n` +
+              `Мисол: <b>27</b> ёки <b>33</b>`,
+              { parse_mode: 'HTML' },
+            );
+            return;
+          }
+
+          const foiz = parseInt(pctStr, 10);
+          const updatedData = { ...currentData, foiz };
+          await this.ordersService.saveDraft(ctx.user.id, 'SELECT_LIMIT', updatedData);
+          await this.renderStepLimit(ctx, updatedData);
+        } else if (data.startsWith('chk_limit:')) {
+          const limitValStr = data.split(':')[1];
+          const draft = await this.ordersService.getDraft(ctx.user.id);
+          const currentData = (draft?.formData as any) || {};
+
+          if (limitValStr === 'custom') {
+            await this.ordersService.saveDraft(ctx.user.id, 'INPUT_CUSTOM_LIMIT', currentData);
+            await ctx.reply(
+              `✏️ <b>Лимит суммасини ёзиб юборинг:</b>\n\n` +
+              `Мисол: <code>1300000</code> ёки <code>2500000</code>`,
+              { parse_mode: 'HTML' },
+            );
+            return;
+          }
+
+          const limit = parseInt(limitValStr, 10);
+          const foiz = currentData.foiz || 0;
+          const fee = (limit * foiz) / 100;
+          const calculatedAmount = Math.round(limit - fee);
+
+          const updatedData = {
+            ...currentData,
+            limit,
+            calculatedAmount,
+          };
+
+          await this.ordersService.saveDraft(ctx.user.id, 'SELECT_PRODUCT', updatedData);
+          await this.renderStepProduct(ctx, updatedData);
+        } else if (data.startsWith('chk_prod:')) {
+          const prodType = data.split(':')[1];
+          const draft = await this.ordersService.getDraft(ctx.user.id);
+          const currentData = (draft?.formData as any) || {};
+
+          if (prodType === 'custom') {
+            await this.ordersService.saveDraft(ctx.user.id, 'INPUT_CUSTOM_PRODUCT', currentData);
+            await ctx.reply(
+              `✏️ <b>Маҳсулот номини ёзиб юборинг:</b>\n\n` +
+              `Мисол: <code>iPhone 15 Pro — 1 ta</code>`,
+              { parse_mode: 'HTML' },
+            );
+            return;
+          }
+
+          const defaultName = `${currentData.programName} — 1 ta`;
+          const updatedData = {
+            ...currentData,
+            productName: defaultName,
+          };
+
+          await this.ordersService.saveDraft(ctx.user.id, 'PREVIEW_CHECK', updatedData);
+          await this.renderCheckPreview(ctx, updatedData);
+        } else if (data === 'chk_confirm') {
+          const draft = await this.ordersService.getDraft(ctx.user.id);
+          const d = (draft?.formData as any) || {};
+
+          if (!d.programId || !d.storeId || !d.limit || d.foiz === undefined) {
+            await ctx.reply('❌ Маълумотлар тўлиқ эмас. Илтимос, янгидан бошланг.');
+            return;
+          }
+
+          const order = await this.ordersService.createQuickCheckOrder({
+            sellerId: ctx.user.id,
+            programId: d.programId,
+            storeId: d.storeId,
+            agencyId: d.agencyId,
+            agencyEmployeeId: d.agencyEmployeeId,
+            limitAmount: d.limit,
+            foiz: d.foiz,
+            productName: d.productName,
+          });
+
+          if (!order) {
+            await ctx.reply('❌ Чекни сақлашда хатолик юз берди.');
+            return;
+          }
+
+          const checkText = formatReceiptText(order as any);
+
+          // Reply to seller with preformatted check
           await ctx.reply(
-            `✅ Дўкон танланди: <b>${store.name}</b>\n\n` +
-            `<b>3-босқич: Мижоз маълумотлари ва лимитларни киритиш.</b>\n\n` +
-            `Қуйидаги форматда хабар юборинг:\n` +
-            `<code>/client [Ф.И.Ш] [Тел] [Умумий лимит] [Ечиладиган лимит] [Шартнома тугаш санаси]</code>\n\n` +
-            `<i>Эслатма: Ечиладиган лимит умумий лимитдан ошмаслиги шарт!</i>\n\n` +
-            `Мисол:\n` +
-            `<code>/client Алишер Каримов +998901234567 15000000 12000000 31.12.2026</code>`,
+            `🎉 <b>Чек муваффақиятли урилди ва тизимга киритилди!</b>\n\n` +
+            `<code>${checkText}</code>`,
             { parse_mode: 'HTML' },
           );
+
+          // Send to receipts group
+          try {
+            const setting = await this.prisma.systemSetting.findUnique({
+              where: { key: 'RECEIPTS_GROUP_ID' },
+            });
+            const targetGroupId = process.env.RECEIPTS_GROUP_ID || setting?.value;
+            if (targetGroupId) {
+              const groupKb = new InlineKeyboard()
+                .text('📦 Омбор: Тасдиқлаш', `ombor_confirm:${order.id}`)
+                .text('❌ Бекор қилиш', `ombor_cancel:${order.id}`);
+
+              await this.bot.api.sendMessage(targetGroupId, checkText, {
+                reply_markup: groupKb,
+              });
+            }
+          } catch (e) {
+            this.logger.error(`Receipt group dispatch error: ${(e as Error).message}`);
+          }
+        } else if (data === 'chk_cancel') {
+          await this.ordersService.clearDraft(ctx.user.id);
+          await this.safeEditOrReply(ctx, '❌ Чек бекор қилинди.');
+        } else if (data.startsWith('ombor_confirm:')) {
+          const orderId = data.split(':')[1];
+          const actorName = ctx.from?.first_name || 'Омборчи';
+
+          try {
+            const updated = await this.ordersService.confirmOmborStatus(orderId, actorName);
+            const updatedText = formatReceiptText(updated as any);
+
+            try {
+              await ctx.editMessageText(updatedText, {
+                reply_markup: new InlineKeyboard().text(`✅ Омбор: Тасдиқланди (${actorName})`, 'noop'),
+              });
+            } catch {}
+
+            await ctx.answerCallbackQuery({
+              text: '✅ Омбор томонидан муваффақиятли тасдиқланди!',
+              show_alert: true,
+            });
+
+            if (updated.seller?.telegramId) {
+              await this.bot.api.sendMessage(
+                updated.seller.telegramId.toString(),
+                `✅ <b>Сизнинг #${updated.checkNumber} рақамли чекингиз омбор томонидан тасдиқланди!</b>\n\n<code>${updatedText}</code>`,
+                { parse_mode: 'HTML' },
+              ).catch(() => {});
+            }
+          } catch (err) {
+            await ctx.answerCallbackQuery({
+              text: `❌ Хатолик: ${(err as Error).message}`,
+              show_alert: true,
+            });
+          }
+        } else if (data.startsWith('ombor_cancel:')) {
+          const orderId = data.split(':')[1];
+          const actorName = ctx.from?.first_name || 'Ходим';
+
+          try {
+            const updated = await this.ordersService.cancelOrder(orderId, actorName);
+            const updatedText = formatReceiptText(updated as any);
+
+            try {
+              await ctx.editMessageText(updatedText, {
+                reply_markup: new InlineKeyboard().text(`❌ Омбор: Бекор қилинди (${actorName})`, 'noop'),
+              });
+            } catch {}
+
+            await ctx.answerCallbackQuery({
+              text: '❌ Чек омбор томонидан бекор қилинди!',
+              show_alert: true,
+            });
+
+            if (updated.seller?.telegramId) {
+              await this.bot.api.sendMessage(
+                updated.seller.telegramId.toString(),
+                `❌ <b>Сизнинг #${updated.checkNumber} рақамли чекингиз бекор қилинди!</b>\n\n<code>${updatedText}</code>`,
+                { parse_mode: 'HTML' },
+              ).catch(() => {});
+            }
+          } catch (err) {
+            await ctx.answerCallbackQuery({
+              text: `❌ Хатолик: ${(err as Error).message}`,
+              show_alert: true,
+            });
+          }
         } else if (data.startsWith('discard_draft:')) {
           await this.ordersService.clearDraft(ctx.user.id);
           await ctx.reply('🗑 Қоралама бекор қилинди.');
@@ -472,6 +811,56 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
           await ctx.reply(`❌ Хатолик: ${(err as Error).message}`);
         }
         return;
+      }
+
+      // Check active wizard draft inputs
+      if (ctx.user) {
+        const draft = await this.ordersService.getDraft(ctx.user.id);
+        if (draft) {
+          const d = (draft.formData as any) || {};
+
+          if (draft.step === 'INPUT_CUSTOM_PERCENTAGE') {
+            const num = parseInt(text.replace(/[^\d]/g, ''), 10);
+            if (isNaN(num) || num <= 0 || num > 100) {
+              await ctx.reply('❌ Илтимос, 1 дан 100 гача бўлган тўғри фоизни рақамда ёзинг (масалан: 27 ёки 33):');
+              return;
+            }
+            const updatedData = { ...d, foiz: num };
+            await this.ordersService.saveDraft(ctx.user.id, 'SELECT_LIMIT', updatedData);
+            await this.renderStepLimit(ctx, updatedData);
+            return;
+          }
+
+          if (draft.step === 'INPUT_CUSTOM_LIMIT' || (draft.step === 'SELECT_LIMIT' && /^\d[\d\s]*$/.test(text))) {
+            const cleanNum = parseInt(text.replace(/\s+/g, ''), 10);
+            if (isNaN(cleanNum) || cleanNum <= 0) {
+              await ctx.reply('❌ Илтимос, тўғри суммани рақамда киритинг (масалан: <code>1300000</code>):', { parse_mode: 'HTML' });
+              return;
+            }
+            const foiz = d.foiz || 0;
+            const fee = (cleanNum * foiz) / 100;
+            const calculatedAmount = Math.round(cleanNum - fee);
+
+            const updatedData = {
+              ...d,
+              limit: cleanNum,
+              calculatedAmount,
+            };
+            await this.ordersService.saveDraft(ctx.user.id, 'SELECT_PRODUCT', updatedData);
+            await this.renderStepProduct(ctx, updatedData);
+            return;
+          }
+
+          if (draft.step === 'INPUT_CUSTOM_PRODUCT') {
+            const updatedData = {
+              ...d,
+              productName: text,
+            };
+            await this.ordersService.saveDraft(ctx.user.id, 'PREVIEW_CHECK', updatedData);
+            await this.renderCheckPreview(ctx, updatedData);
+            return;
+          }
+        }
       }
 
       // /client command to save customer info into draft
@@ -746,31 +1135,166 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    // Check existing draft
-    const draft = await this.ordersService.getDraft(ctx.user.id);
-    if (draft) {
-      await ctx.reply(
-        `Сизда сақланган қоралама буюртма мавжуд (босқич: ${draft.step}). Давом эттирасизми ёки янгидан бошлайсизми?`,
-        {
-          reply_markup: new InlineKeyboard()
-            .text('▶️ Давом эттириш', `resume_draft:${draft.id}`)
-            .text('🗑 Янгидан бошлаш', `discard_draft:${draft.id}`),
-        },
-      );
-      return;
-    }
+    // Clear previous draft to ensure a fresh, instant experience
+    await this.ordersService.clearDraft(ctx.user.id);
 
     const programs = await this.programsService.listActive();
     const ik = new InlineKeyboard();
+    let col = 0;
     for (const p of programs) {
-      ik.text(`🏦 ${p.name}`, `select_prog:${p.id}`).row();
+      let icon = '📱';
+      const nameLower = p.name.toLowerCase();
+      if (nameLower.includes('alif')) icon = '🟢';
+      else if (nameLower.includes('anor')) icon = '🔴';
+      else if (nameLower.includes('ishonch')) icon = '🔵';
+      else if (nameLower.includes('uzum')) icon = '🍇';
+      else if (nameLower.includes('payme')) icon = '📱';
+
+      ik.text(`${icon} ${p.name}`, `chk_prog:${p.id}`);
+      col++;
+      if (col % 2 === 0) {
+        ik.row();
+      }
     }
 
     await ctx.reply(
-      '📝 <b>Янги буюртма очиш (1–20-бандлар):</b>\n\n' +
-      '<b>1-босқич:</b> Муддатли тўлов дастурини танланг:\n' +
-      '<i>(Қуйидаги тугмалардан бирини босинг)</i>',
+      '🧾 <b>Янги чек уриш (1-босқич):</b>\n\n' +
+      '📱 <b>Иловани (тўлов дастурини) танланг:</b>\n' +
+      '<i>(Керакли илова устига босинг)</i>',
       { reply_markup: ik, parse_mode: 'HTML' },
+    );
+  }
+
+  private async safeEditOrReply(ctx: BotContext, text: string, keyboard?: InlineKeyboard) {
+    try {
+      if (ctx.callbackQuery && ctx.callbackQuery.message) {
+        await ctx.editMessageText(text, {
+          reply_markup: keyboard,
+          parse_mode: 'HTML',
+        });
+        return;
+      }
+    } catch {}
+
+    await ctx.reply(text, {
+      reply_markup: keyboard,
+      parse_mode: 'HTML',
+    });
+  }
+
+  private async renderStepPercentage(ctx: BotContext, d: any) {
+    const ik = new InlineKeyboard()
+      .text('10%', 'chk_pct:10')
+      .text('15%', 'chk_pct:15')
+      .text('20%', 'chk_pct:20')
+      .row()
+      .text('25%', 'chk_pct:25')
+      .text('30%', 'chk_pct:30')
+      .text('35%', 'chk_pct:35')
+      .row()
+      .text('40%', 'chk_pct:40')
+      .text('✏️ Бошқа фоиз', 'chk_pct:custom');
+
+    const agentTitle = d.agencyName && d.agencyName !== 'Agentsiz'
+      ? `${d.agencyName} (${d.agencyEmployeeName || '—'})`
+      : 'Agentsiz';
+
+    await this.safeEditOrReply(
+      ctx,
+      `📊 <b>5-босқич: Фоизни танланг:</b>\n\n` +
+      `• Илова: <b>${d.programName}</b>\n` +
+      `• Дўкон: <b>${d.storeName}</b>\n` +
+      `• Агент: <b>${agentTitle}</b>\n\n` +
+      `<i>(Қуйидаги фоизлардан бирини босинг)</i>`,
+      ik,
+    );
+  }
+
+  private async renderStepLimit(ctx: BotContext, d: any) {
+    const ik = new InlineKeyboard()
+      .text('500 000', 'chk_limit:500000')
+      .text('1 000 000', 'chk_limit:1000000')
+      .row()
+      .text('1 300 000', 'chk_limit:1300000')
+      .text('1 500 000', 'chk_limit:1500000')
+      .row()
+      .text('2 000 000', 'chk_limit:2000000')
+      .text('2 500 000', 'chk_limit:2500000')
+      .row()
+      .text('3 000 000', 'chk_limit:3000000')
+      .text('5 000 000', 'chk_limit:5000000')
+      .row()
+      .text('10 000 000', 'chk_limit:10000000')
+      .text('✏️ Бошқа сумма', 'chk_limit:custom');
+
+    await this.safeEditOrReply(
+      ctx,
+      `💰 <b>6-босқич: Лимит суммасини танланг ёки ёзинг:</b>\n\n` +
+      `• Танланган фоиз: <b>${d.foiz}%</b>\n\n` +
+      `<i>(Тайёр тугмалардан бирини босинг ёки суммани рақамда ёзиб юборинг, масалан: <code>1300000</code>)</i>`,
+      ik,
+    );
+  }
+
+  private async renderStepProduct(ctx: BotContext, d: any) {
+    const defaultName = `${d.programName} — 1 ta`;
+    const ik = new InlineKeyboard()
+      .text(`✅ Шундай қолдириш (${defaultName})`, 'chk_prod:default')
+      .row()
+      .text('✏️ Бошқа маҳсулот ёзиш', 'chk_prod:custom');
+
+    const limitFormatted = DecimalUtil.formatMoney(d.limit, "so'm");
+    const calcFormatted = DecimalUtil.formatMoney(d.calculatedAmount, "so'm");
+
+    await this.safeEditOrReply(
+      ctx,
+      `📦 <b>7-босқич: Маҳсулот номи:</b>\n\n` +
+      `• Лимит: <b>${limitFormatted}</b>\n` +
+      `• Фоиз: <b>${d.foiz}%</b>\n` +
+      `• Ҳисобланган сумма: <b>${calcFormatted}</b>\n\n` +
+      `• Одатий маҳсулот номи: <b>${defaultName}</b>\n\n` +
+      `<i>(Шундай қолдиришни хоҳлайсизми ёки бошқа маҳсулот ёзасизми?)</i>`,
+      ik,
+    );
+  }
+
+  private async renderCheckPreview(ctx: BotContext, d: any) {
+    const limitFormatted = DecimalUtil.formatMoney(d.limit, "so'm");
+    const calcFormatted = DecimalUtil.formatMoney(d.calculatedAmount, "so'm");
+    const sellerFullName = [ctx.user.firstName, ctx.user.lastName].filter(Boolean).join(' ') || 'Савдочи';
+    const sellerTgId = ctx.user.telegramId ? ` (${ctx.user.telegramId})` : '';
+    const time = DateUtil.formatTashkent(new Date(), 'DD.MM.YYYY HH:mm:ss');
+    const prod = d.productName || `${d.programName} — 1 ta`;
+    const prodFormatted = prod.startsWith('•') ? prod : `• ${prod}`;
+    const agentName = d.agencyName || 'Agentsiz';
+    const empName = d.agencyEmployeeName || '—';
+
+    const previewText =
+      `Yangi chek (Кўриб чиқиш)\n` +
+      `⏳ Ombor statusi: Tasdiqlash kutilmoqda\n\n` +
+      `🕐 Urilgan vaqt: ${time}\n` +
+      `👤 Savdochi: ${sellerFullName}${sellerTgId}\n` +
+      `📱 Ilova: ${d.programName}\n` +
+      `💰 Limit: ${limitFormatted}\n` +
+      `📊 Foiz: ${d.foiz}%\n` +
+      `💵 Hisoblangan summa: ${calcFormatted}\n` +
+      `📦 Mahsulotlar:\n` +
+      `${prodFormatted}\n` +
+      `🏪 Do'kon: ${d.storeName}\n` +
+      `🤝 Agent: ${agentName}\n` +
+      `👔 Agent xodimi: ${empName}`;
+
+    const ik = new InlineKeyboard()
+      .text('✅ Чекни уриш ва Гуруҳга чиқариш', 'chk_confirm')
+      .row()
+      .text('❌ Бекор қилиш', 'chk_cancel');
+
+    await this.safeEditOrReply(
+      ctx,
+      `📋 <b>Чекни тасдиқлаш (Олдиндан кўриш):</b>\n\n` +
+      `<pre>${previewText}</pre>\n\n` +
+      `<i>Маълумотлар тўғри бўлса, «Чекни уриш ва Гуруҳга чиқариш» тугмасини босинг:</i>`,
+      ik,
     );
   }
 

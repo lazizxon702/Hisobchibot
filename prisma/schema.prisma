@@ -143,6 +143,7 @@ model Agency {
 
   employees AgencyEmployee[]
   sales     Sale[]
+  orders    Order[]
 
   @@index([name])
 }
@@ -157,6 +158,7 @@ model AgencyEmployee {
 
   agency Agency @relation(fields: [agencyId], references: [id], onDelete: Restrict)
   sales  Sale[]
+  orders Order[]
 
   @@index([agencyId])
 }
@@ -242,10 +244,18 @@ model Order {
   createdAt          DateTime     @default(now())
   updatedAt          DateTime     @updatedAt
 
+  agencyId           String?
+  agencyEmployeeId   String?
+  checkNumber        Int?         @unique
+  omborStatus        String       @default("Tasdiqlash kutilmoqda")
+  productName        String?
+
   seller          User              @relation("OrderSeller", fields: [sellerId], references: [id], onDelete: Restrict)
   program         FinancingProgram  @relation(fields: [programId], references: [id], onDelete: Restrict)
   store           Store             @relation(fields: [storeId], references: [id], onDelete: Restrict)
   customer        Customer          @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  agency          Agency?           @relation(fields: [agencyId], references: [id], onDelete: SetNull)
+  agencyEmployee  AgencyEmployee?   @relation(fields: [agencyEmployeeId], references: [id], onDelete: SetNull)
   items           OrderItem[]
   inventoryUnits  InventoryUnit[]
   assignments     OrderAssignment[]
@@ -254,6 +264,7 @@ model Order {
   attachments     Attachment[]
 
   @@index([orderNumber])
+  @@index([checkNumber])
   @@index([sellerId])
   @@index([status])
   @@index([businessDate])
