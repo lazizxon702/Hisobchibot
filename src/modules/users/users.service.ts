@@ -216,4 +216,72 @@ export class UsersService {
       },
     });
   }
+
+  async addAdminByTelegramId(adminId: string, telegramId: string | bigint | number): Promise<User> {
+    const isAdmin = await this.hasRole(adminId, RoleName.SUPER_ADMIN);
+    if (!isAdmin) {
+      throw new ForbiddenException('Фақат SUPER_ADMIN янги админ қўша олади');
+    }
+
+    const tgId = BigInt(telegramId);
+    const adminRole = await this.prisma.role.upsert({
+      where: { name: RoleName.SUPER_ADMIN },
+      update: {},
+      create: { name: RoleName.SUPER_ADMIN },
+    });
+
+    let targetUser = await this.prisma.user.findUnique({
+      where: { telegramId: tgId },
+    });
+
+    if (!targetUser) {
+      targetUser = await this.prisma.user.create({
+        data: {
+          telegramId: tgId,
+          firstName: 'Admin',
+          isActive: true,
+          isApproved: true,
+        },
+      });
+    } else {
+      targetUser = await this.prisma.user.update({
+        where: { id: targetUser.id },
+        data: { isActive: true, isApproved: true },
+      });
+    }
+
+    await this.prisma.userRole.upsert({
+      where: {
+        userId_roleId: { userId: targetUser.id, roleId: adminRole.id },
+      },
+      update: {},
+      create: { userId: targetUser.id, roleId: adminRole.id },
+    });
+
+    await this.audit.log({
+      entityName: 'User',
+      entityId: targetUser.id,
+      action: 'ADMIN_PROMOTED',
+      performedById: adminId,
+      newValue: { telegramId: tgId.toString(), role: RoleName.SUPER_ADMIN },
+    });
+
+    return targetUser;
+  }
+
+  async listAdmins() {
+    return this.prisma.user.findMany({
+      where: {
+        roles: {
+          some: {
+            role: { name: RoleName.SUPER_ADMIN },
+          },
+        },
+      },
+      include: {
+        roles: { include: { role: true } },
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+  }
 }

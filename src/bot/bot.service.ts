@@ -267,6 +267,41 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         } else if (data.startsWith('resume_draft:')) {
           const draft = await this.ordersService.getDraft(ctx.user.id);
           await ctx.reply(`▶️ Қоралама давом эттирилмоқда (босқич: ${draft?.step}).`);
+        } else if (data === 'mgmt_add_admin') {
+          await ctx.reply(
+            `➕ <b>Янги админ қўшиш:</b>\n\n` +
+            `Админ қилмоқчи бўлган фойдаланувчининг Telegram ID рақамини қуйидаги форматда юборинг:\n\n` +
+            `<code>/add_admin [TELEGRAM_ID]</code>\n\n` +
+            `Мисол:\n` +
+            `<code>/add_admin 7146730534</code>`,
+            { parse_mode: 'HTML' },
+          );
+        } else if (data === 'mgmt_list_admins') {
+          const admins = await this.usersService.listAdmins();
+          let txt = `👑 <b>Тизимдаги фаол админлар (${admins.length} та):</b>\n\n`;
+          for (const a of admins) {
+            txt += `• <b>${a.firstName || ''} ${a.lastName || ''}</b> (@${a.username || 'username йўқ'})\n  ID: <code>${a.telegramId}</code>\n\n`;
+          }
+          await ctx.reply(txt, { parse_mode: 'HTML' });
+        } else if (data === 'mgmt_pending') {
+          const pending = await this.usersService.listPendingUsers();
+          if (pending.length === 0) {
+            await ctx.reply('✅ Ҳозирда тасдиқ кутилаётган фойдаланувчилар йўқ.');
+            return;
+          }
+          let txt = `⏳ <b>Тасдиқ кутилаётган фойдаланувчилар (${pending.length} та):</b>\n\n`;
+          for (const u of pending.slice(0, 5)) {
+            txt += `• ${u.firstName || ''} ${u.lastName || ''} (@${u.username || '—'})\n  ID: <code>${u.telegramId}</code>\n  Тасдиқлаш: <code>/approve_user ${u.telegramId} SELLER</code>\n\n`;
+          }
+          await ctx.reply(txt, { parse_mode: 'HTML' });
+        } else if (data === 'mgmt_list_staff') {
+          const staff = await this.usersService.listStaffUsers();
+          let txt = `👥 <b>Тизимдаги ходимлар (${staff.length} та):</b>\n\n`;
+          for (const s of staff.slice(0, 10)) {
+            const roleList = s.roles.map((r: any) => r.role.name).join(', ');
+            txt += `• <b>${s.firstName || ''} ${s.lastName || ''}</b>\n  ID: <code>${s.telegramId}</code>\n  Роллар: <i>${roleList || 'Ходим'}</i>\n\n`;
+          }
+          await ctx.reply(txt, { parse_mode: 'HTML' });
         } else if (data.startsWith('view_order:')) {
           const orderId = data.split(':')[1];
           await this.renderOrderCard(ctx, orderId);
@@ -283,6 +318,69 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     // Text messages for search and commands
     this.bot.on('message:text', async (ctx) => {
       const text = ctx.message.text.trim();
+
+      // /add_admin command
+      if (text.startsWith('/add_admin ')) {
+        const isSuperAdmin = ctx.userRoles?.includes(RoleName.SUPER_ADMIN);
+        if (!isSuperAdmin) {
+          await ctx.reply(BOT_TEXTS.accessDenied);
+          return;
+        }
+
+        const targetTgIdStr = text.replace('/add_admin ', '').trim();
+        if (!/^\d+$/.test(targetTgIdStr)) {
+          await ctx.reply('❌ Нотўғри Telegram ID. Фақат рақамлардан иборат бўлиши керак.\nМисол: <code>/add_admin 123456789</code>', { parse_mode: 'HTML' });
+          return;
+        }
+
+        try {
+          const targetUser = await this.usersService.addAdminByTelegramId(ctx.user.id, targetTgIdStr);
+          await ctx.reply(
+            `👑 <b>Янги админ муваффақиятли қўшилди!</b>\n\n` +
+            `• Telegram ID: <code>${targetTgIdStr}</code>\n` +
+            `• Исми: <b>${targetUser.firstName || 'Admin'}</b>\n` +
+            `• Роли: <b>SUPER_ADMIN</b>\n` +
+            `• Ҳолати: <b>Фаол (Approved)</b>\n\n` +
+            `Ушбу фойдаланувчи энди ботга кириб /start босганда тўлиқ админ ҳуқуқларига эга бўлади.`,
+            { parse_mode: 'HTML' },
+          );
+        } catch (err) {
+          await ctx.reply(`❌ Хатолик: ${(err as Error).message}`);
+        }
+        return;
+      }
+
+      // /approve_user command
+      if (text.startsWith('/approve_user ')) {
+        const isSuperAdmin = ctx.userRoles?.includes(RoleName.SUPER_ADMIN);
+        if (!isSuperAdmin) {
+          await ctx.reply(BOT_TEXTS.accessDenied);
+          return;
+        }
+
+        const parts = text.split(' ');
+        const targetTgIdStr = parts[1];
+        const rolesStr = parts[2] || 'SELLER';
+        const roleNames = rolesStr.split(',') as RoleName[];
+
+        try {
+          const userRecord = await this.usersService.getUserByTelegramId(BigInt(targetTgIdStr));
+          if (!userRecord) {
+            await ctx.reply(`Фойдаланувчи топилмади: ${targetTgIdStr}`);
+            return;
+          }
+
+          await this.usersService.approveUser(ctx.user.id, userRecord.id, roleNames);
+          await ctx.reply(
+            `✅ Фойдаланувчи тасдиқланди: <b>${userRecord.firstName || ''}</b> (ID: <code>${targetTgIdStr}</code>)\n` +
+            `Берилган роллар: <i>${roleNames.join(', ')}</i>`,
+            { parse_mode: 'HTML' },
+          );
+        } catch (err) {
+          await ctx.reply(`❌ Хатолик: ${(err as Error).message}`);
+        }
+        return;
+      }
 
       // /client command to save customer info into draft
       if (text.startsWith('/client ')) {
@@ -703,10 +801,23 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     }
 
     const pendingUsers = await this.usersService.listPendingUsers();
+    const admins = await this.usersService.listAdmins();
+
+    const ik = new InlineKeyboard()
+      .text('➕ Янги админ қўшиш (ID орқали)', 'mgmt_add_admin')
+      .row()
+      .text(`👑 Админлар (${admins.length})`, 'mgmt_list_admins')
+      .text(`⏳ Кутилаётганлар (${pendingUsers.length})`, 'mgmt_pending')
+      .row()
+      .text('👥 Барча ходимлар', 'mgmt_list_staff');
+
     await ctx.reply(
-      `⚙️ <b>Бошқарув панели:</b>\n\nТасдиқ кутилаётган фойдаланувчилар: ${pendingUsers.length} та\n` +
-      `Фойдаланувчини тасдиқлаш учун:\n<code>/approve_user &lt;tgId&gt; SELLER,CONTINUATION_OPERATOR</code>`,
-      { parse_mode: 'HTML' },
+      `⚙️ <b>Бошқарув ва ходимлар панели:</b>\n\n` +
+      `• Фаол админлар: <b>${admins.length} та</b>\n` +
+      `• Тасдиқ кутилаётган ходимлар: <b>${pendingUsers.length} та</b>\n\n` +
+      `Қуйидаги тугмалардан бирини танланг ёки тўғридан-тўғри буйруқ юборинг:\n` +
+      `<code>/add_admin [TELEGRAM_ID]</code>`,
+      { reply_markup: ik, parse_mode: 'HTML' },
     );
   }
 
