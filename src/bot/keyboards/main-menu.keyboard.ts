@@ -44,5 +44,5 @@ export function getMainMenuKeyboard(roles: RoleName[]): Keyboard {
     kb.row();
   }
 
-  return kb.resized();
+  return kb.resized().persistent();
 }

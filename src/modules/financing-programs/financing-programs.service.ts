@@ -6,10 +6,35 @@ export class FinancingProgramsService {
   constructor(private readonly prisma: PrismaService) {}
 
   async listActive() {
-    return this.prisma.financingProgram.findMany({
+    let progs = await this.prisma.financingProgram.findMany({
       where: { isActive: true },
       orderBy: { createdAt: 'asc' },
     });
+
+    if (progs.length === 0) {
+      const defaults = [
+        { name: 'Trust 1 (Ishonch)', requiresContinuation: false, code: 'TRUST_1', isActive: true },
+        { name: 'Alif 6 ойлик', requiresContinuation: false, code: 'ALIF_6M', isActive: true },
+        { name: 'Alif Кодирака', requiresContinuation: false, code: 'ALIF_KODIRAKA', isActive: true },
+        { name: 'Payme', requiresContinuation: true, code: 'PAYME', isActive: true },
+        { name: 'Anorbank', requiresContinuation: true, code: 'ANOR', isActive: true },
+        { name: 'Uzum Nasiya', requiresContinuation: true, code: 'UZUM', isActive: true },
+        { name: 'Бошқа дастур', requiresContinuation: true, code: 'OTHER', isActive: true },
+      ];
+      for (const d of defaults) {
+        await this.prisma.financingProgram.upsert({
+          where: { name: d.name },
+          update: { isActive: true },
+          create: d,
+        });
+      }
+      progs = await this.prisma.financingProgram.findMany({
+        where: { isActive: true },
+        orderBy: { createdAt: 'asc' },
+      });
+    }
+
+    return progs;
   }
 
   async getById(id: string) {
