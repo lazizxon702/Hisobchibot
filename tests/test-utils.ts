@@ -252,12 +252,30 @@ export function createMockPrismaService(db: InMemoryDb): PrismaService {
         return res;
       },
       findMany: async (args: any) => {
-        return db.orders.map((o) => ({
+        let list = db.orders;
+        if (args?.where) {
+          if (args.where.sellerId) {
+            list = list.filter((o: any) => o.sellerId === args.where.sellerId);
+          }
+        }
+        return list.map((o: any) => ({
           ...o,
-          customer: db.customers.find((c) => c.id === o.customerId),
-          program: db.programs.find((p) => p.id === o.programId),
-          seller: db.users.find((u) => u.id === o.sellerId),
-          assignments: db.orderAssignments.filter((a) => a.orderId === o.id),
+          customer: db.customers?.find((c: any) => c.id === o.customerId),
+          program: db.programs?.find((p: any) => p.id === o.programId),
+          seller: db.users?.find((u: any) => u.id === o.sellerId),
+          store: db.stores?.find((s: any) => s.id === o.storeId),
+          agency: db.agencies?.find((a: any) => a.id === o.agencyId),
+          agencyEmployee: db.agencyEmployees?.find((e: any) => e.id === o.agencyEmployeeId),
+          items: db.orderItems?.filter((i: any) => i.orderId === o.id) || [],
+          inventoryUnits: db.inventoryUnits?.filter((u: any) => u.orderId === o.id) || [],
+          daftarReviews: db.daftarReviews?.filter((d: any) => d.orderId === o.id) || [],
+          assignments: db.orderAssignments?.filter((a: any) => a.orderId === o.id) || [],
+          sales: (db.sales || []).filter((s: any) => s.orderId === o.id).map((s: any) => ({
+            ...s,
+            buyer: db.buyers?.find((b: any) => b.id === s.buyerId),
+            operator: db.users?.find((u: any) => u.id === s.operatorId),
+            debtSchedules: db.debtSchedules?.filter((d: any) => d.saleId === s.id) || [],
+          })),
         }));
       },
       create: async ({ data }: any) => {

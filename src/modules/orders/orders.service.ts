@@ -722,7 +722,9 @@ export class OrdersService {
     });
     if (!user) return [];
 
-    const isSuperAdmin = user.roles.some((r) => r.role.name === RoleName.SUPER_ADMIN);
+    const isSuperAdmin = user.roles?.some(
+      (r: any) => (r.role?.name || r.role || r) === RoleName.SUPER_ADMIN,
+    );
     if (isSuperAdmin) {
       return this.prisma.order.findMany({
         orderBy: { createdAt: 'desc' },
@@ -741,6 +743,49 @@ export class OrdersService {
       orderBy: { createdAt: 'desc' },
       include: { customer: true, program: true },
       take: 30,
+    });
+  }
+
+  async getAllOrdersForExport(userId: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      include: { roles: { include: { role: true } } },
+    });
+    if (!user) return [];
+
+    const isSuperAdmin = user.roles?.some(
+      (r: any) => (r.role?.name || r.role || r) === RoleName.SUPER_ADMIN,
+    );
+    const whereClause = isSuperAdmin
+      ? {}
+      : {
+          OR: [
+            { sellerId: userId },
+            { assignments: { some: { operatorId: userId } } },
+          ],
+        };
+
+    return this.prisma.order.findMany({
+      where: whereClause,
+      orderBy: { createdAt: 'desc' },
+      include: {
+        seller: true,
+        program: true,
+        store: true,
+        agency: true,
+        agencyEmployee: true,
+        customer: true,
+        items: true,
+        inventoryUnits: true,
+        daftarReviews: { orderBy: { createdAt: 'desc' }, take: 1 },
+        sales: {
+          include: {
+            buyer: true,
+            operator: true,
+            debtSchedules: true,
+          },
+        },
+      },
     });
   }
 }

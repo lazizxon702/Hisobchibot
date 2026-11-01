@@ -22,6 +22,7 @@ import {
   RoleName,
 } from '@prisma/client';
 import { DecimalUtil } from '../src/common/decimal.util';
+import { ExcelUtil } from '../src/common/excel.util';
 
 describe('36-Point Full Business Process Tests', () => {
   let db: any;
@@ -265,4 +266,58 @@ describe('36-Point Full Business Process Tests', () => {
     expect(updatedSale.paymentStatus).toBe(PaymentStatus.PAID);
     expect(updatedSale.debtSchedules[0].isSettled).toBe(true);
   });
+
+  it('Exports orders to a formatted Excel workbook with separate cells for every piece of information', async () => {
+    // 1. Create order
+    await ordersService.createStage1Order36({
+      sellerId: seller.id,
+      programId: programPayme.id,
+      storeId: store.id,
+      contractEndDate: new Date(Date.now() + 180 * 24 * 3600 * 1000),
+      daftarRejected: false,
+      customer: {
+        fullName: 'Дилшод Алимов',
+        phone1: '+998909998877',
+        generalLimit: 3000000,
+        withdrawableLimit: 2500000,
+      },
+      productPrice: 2500000,
+      agentPercentage: 25,
+      clientPayoutAmount: 1875000,
+      productName: 'iPhone 15 Pro — 1 ta',
+      quantity: 1,
+      daftarStatus: DaftarStatus.APPROVED,
+    });
+
+    const exportOrders = await ordersService.getAllOrdersForExport(seller.id);
+    expect(exportOrders.length).toBeGreaterThanOrEqual(1);
+
+    const buffer = await ExcelUtil.generateOrdersWorkbook(exportOrders as any);
+    expect(buffer).toBeDefined();
+    expect(buffer.length).toBeGreaterThan(1000); // Valid XLSX file buffer
+
+    // Read back workbook to verify columns and rows
+    const ExcelJS = await import('exceljs');
+    const readWorkbook = new ExcelJS.Workbook();
+    await readWorkbook.xlsx.load(buffer);
+    const sheet = readWorkbook.getWorksheet('Чеклар рўйхати');
+    expect(sheet).toBeDefined();
+
+    // Verify header row
+    const headerRow = sheet!.getRow(1);
+    expect(headerRow.getCell(1).value).toBe('№');
+    expect(headerRow.getCell(2).value).toBe('Чек №');
+    expect(headerRow.getCell(3).value).toBe('Буюртма №');
+    expect(headerRow.getCell(8).value).toBe('Сотувчи (Ф.И.Ш.)');
+    expect(headerRow.getCell(15).value).toBe('Мижоз (Ф.И.Ш.)');
+    expect(headerRow.getCell(23).value).toBe('Маҳсулот номи');
+
+    // Verify data row
+    const firstDataRow = sheet!.getRow(2);
+    expect(firstDataRow.getCell(1).value).toBe(1);
+    expect(firstDataRow.getCell(8).value).toContain('Исфандиёр');
+    expect(firstDataRow.getCell(15).value).toBe('Дилшод Алимов');
+    expect(firstDataRow.getCell(23).value).toBe('iPhone 15 Pro — 1 ta');
+  });
 });
+

@@ -4,7 +4,7 @@ import {
   OnModuleDestroy,
   Logger,
 } from '@nestjs/common';
-import { Bot, Context, InlineKeyboard } from 'grammy';
+import { Bot, Context, InlineKeyboard, InputFile } from 'grammy';
 import { PrismaService } from '../infrastructure/prisma/prisma.service';
 import { UsersService } from '../modules/users/users.service';
 import { OrdersService } from '../modules/orders/orders.service';
@@ -30,6 +30,7 @@ import { StoresService } from '../modules/stores/stores.service';
 import { AgenciesService } from '../modules/agencies/agencies.service';
 import { DecimalUtil } from '../common/decimal.util';
 import { DateUtil } from '../common/date.util';
+import { ExcelUtil } from '../common/excel.util';
 import {
   RoleName,
   OrderStatus,
@@ -801,6 +802,8 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
           const remAmt = cur.remainingAmount || 0;
           await this.executeDebtPayment(ctx, saleId, cur.methodStr || 'CASH', remAmt);
+        } else if (data === 'export_my_orders_excel') {
+          await this.handleExportOrdersExcel(ctx);
         } else if (data.startsWith('ombor_confirm:')) {
           const orderId = data.split(':')[1];
           const actorName = ctx.from?.first_name || 'Омборчи';
@@ -2422,7 +2425,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    let text = '📋 <b>Сизнинг буюртмаларингиз:</b>\n\n';
+    let text = '📋 <b>Сизнинг буюртмаларингиз / чекларингиз:</b>\n\n';
     const ik = new InlineKeyboard();
 
     for (const o of orders.slice(0, 10)) {
@@ -2430,7 +2433,37 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       ik.text(`📄 ${o.orderNumber}`, `view_order:${o.id}`).row();
     }
 
+    // Excel export button at the bottom
+    ik.text('📥 Excel кўринишида юклаб олиш (.xlsx)', 'export_my_orders_excel').row();
+
     await ctx.reply(text, { reply_markup: ik, parse_mode: 'HTML' });
+  }
+
+  private async handleExportOrdersExcel(ctx: BotContext) {
+    try {
+      await ctx.reply('⏳ <b>Excel файли тайёрланмоқда, илтимос кутинг...</b>', { parse_mode: 'HTML' });
+      const orders = await this.ordersService.getAllOrdersForExport(ctx.user.id);
+      if (orders.length === 0) {
+        await ctx.reply('Юклаб олиш учун буюртмалар/чеклар мавжуд эмас.');
+        return;
+      }
+
+      const buffer = await ExcelUtil.generateOrdersWorkbook(orders as any);
+      const dateStr = DateUtil.formatTashkent(new Date(), 'YYYY-MM-DD_HH-mm');
+      const fileName = `Cheklar_${dateStr}.xlsx`;
+
+      await ctx.replyWithDocument(new InputFile(buffer, fileName), {
+        caption:
+          `📊 <b>Сизнинг барча чекларингиз Excel ҳисоботи:</b>\n\n` +
+          `• Жами чеклар: <b>${orders.length} та</b>\n` +
+          `• Ҳар бир маълумот алоҳида катакда чиройли шакллантирилди.\n` +
+          `• Сана: <code>${DateUtil.formatTashkent(new Date(), 'DD.MM.YYYY HH:mm')}</code>`,
+        parse_mode: 'HTML',
+      });
+    } catch (err) {
+      this.logger.error('Failed to export orders excel', err);
+      await ctx.reply(`❌ Excel файлини шакллантиришда хатолик юз берди: ${(err as Error).message}`);
+    }
   }
 
   private async handleIncomingQueueButton(ctx: BotContext) {
