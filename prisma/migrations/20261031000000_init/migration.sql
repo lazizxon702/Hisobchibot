@@ -1,4 +1,4 @@
-﻿-- CreateEnum
+-- CreateEnum
 CREATE TYPE "RoleName" AS ENUM ('SUPER_ADMIN', 'SELLER', 'DAFTAR_REVIEWER', 'CONTINUATION_OPERATOR');
 
 -- CreateEnum
@@ -164,6 +164,11 @@ CREATE TABLE "Order" (
     "cancelledReason" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
+    "agencyId" TEXT,
+    "agencyEmployeeId" TEXT,
+    "checkNumber" INTEGER,
+    "omborStatus" TEXT NOT NULL DEFAULT 'Tasdiqlash kutilmoqda',
+    "productName" TEXT,
 
     CONSTRAINT "Order_pkey" PRIMARY KEY ("id")
 );
@@ -463,7 +468,13 @@ CREATE INDEX "Buyer_fullName_idx" ON "Buyer"("fullName");
 CREATE UNIQUE INDEX "Order_orderNumber_key" ON "Order"("orderNumber");
 
 -- CreateIndex
+CREATE UNIQUE INDEX "Order_checkNumber_key" ON "Order"("checkNumber");
+
+-- CreateIndex
 CREATE INDEX "Order_orderNumber_idx" ON "Order"("orderNumber");
+
+-- CreateIndex
+CREATE INDEX "Order_checkNumber_idx" ON "Order"("checkNumber");
 
 -- CreateIndex
 CREATE INDEX "Order_sellerId_idx" ON "Order"("sellerId");
@@ -620,6 +631,12 @@ ALTER TABLE "Order" ADD CONSTRAINT "Order_storeId_fkey" FOREIGN KEY ("storeId") 
 
 -- AddForeignKey
 ALTER TABLE "Order" ADD CONSTRAINT "Order_customerId_fkey" FOREIGN KEY ("customerId") REFERENCES "Customer"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Order" ADD CONSTRAINT "Order_agencyId_fkey" FOREIGN KEY ("agencyId") REFERENCES "Agency"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Order" ADD CONSTRAINT "Order_agencyEmployeeId_fkey" FOREIGN KEY ("agencyEmployeeId") REFERENCES "AgencyEmployee"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "OrderDraft" ADD CONSTRAINT "OrderDraft_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;

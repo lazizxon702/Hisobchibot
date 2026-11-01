@@ -120,6 +120,10 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleInit() {
+    this.bot.catch((err) => {
+      this.logger.error(`Telegram Bot Error: ${(err as any).message || err}`);
+    });
+
     this.setupMiddlewares();
     this.setupHandlers();
 
@@ -218,10 +222,17 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   private setupHandlers() {
     // /start command
     this.bot.command('start', async (ctx) => {
+      if (!ctx.user) {
+        await ctx.reply(
+          `${BOT_TEXTS.welcome}\n\nТизим ишга тушмоқда. Илтимос, бир неча сониядан сўнг қайта /start юборинг.`,
+        );
+        return;
+      }
       const roles: RoleName[] = ctx.userRoles || [];
       const kb = getMainMenuKeyboard(roles);
+      const name = [ctx.user.firstName, ctx.user.lastName].filter(Boolean).join(' ') || ctx.from?.first_name || 'Ходим';
       await ctx.reply(
-        `${BOT_TEXTS.welcome}\n\nСизнинг профилингиз: <b>${ctx.user.firstName || ''} ${ctx.user.lastName || ''}</b>\nРоллар: <i>${roles.join(', ') || 'Ходим'}</i>`,
+        `${BOT_TEXTS.welcome}\n\nСизнинг профилингиз: <b>${name}</b>\nРоллар: <i>${roles.join(', ') || 'Ходим'}</i>`,
         { reply_markup: kb, parse_mode: 'HTML' },
       );
     });
@@ -1261,8 +1272,8 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   private async renderCheckPreview(ctx: BotContext, d: any) {
     const limitFormatted = DecimalUtil.formatMoney(d.limit, "so'm");
     const calcFormatted = DecimalUtil.formatMoney(d.calculatedAmount, "so'm");
-    const sellerFullName = [ctx.user.firstName, ctx.user.lastName].filter(Boolean).join(' ') || 'Савдочи';
-    const sellerTgId = ctx.user.telegramId ? ` (${ctx.user.telegramId})` : '';
+    const sellerFullName = [ctx.user?.firstName, ctx.user?.lastName].filter(Boolean).join(' ') || ctx.from?.first_name || 'Савдочи';
+    const sellerTgId = ctx.user?.telegramId ? ` (${ctx.user.telegramId})` : (ctx.from?.id ? ` (${ctx.from.id})` : '');
     const time = DateUtil.formatTashkent(new Date(), 'DD.MM.YYYY HH:mm:ss');
     const prod = d.productName || `${d.programName} — 1 ta`;
     const prodFormatted = prod.startsWith('•') ? prod : `• ${prod}`;
