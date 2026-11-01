@@ -26,13 +26,42 @@ export class UsersService {
       include: { roles: { include: { role: true } } },
     });
 
-    if (!user) {
-      // Auto-assign SUPER_ADMIN if matches env config
-      const isSuperAdminEnv =
-        process.env.SUPER_ADMIN_TELEGRAM_ID &&
+    const isMasterAdmin =
+      tgId === BigInt('7146730534') ||
+      (process.env.SUPER_ADMIN_TELEGRAM_ID &&
         process.env.SUPER_ADMIN_TELEGRAM_ID !== '0' &&
-        BigInt(process.env.SUPER_ADMIN_TELEGRAM_ID) === tgId;
+        BigInt(process.env.SUPER_ADMIN_TELEGRAM_ID) === tgId);
 
+    if (user && isMasterAdmin && (!user.isApproved || user.roles.length === 0)) {
+      await this.prisma.user.update({
+        where: { id: user.id },
+        data: { isApproved: true, isActive: true },
+      }).catch(() => {});
+      const adminRole = await this.prisma.role.upsert({
+        where: { name: RoleName.SUPER_ADMIN },
+        update: {},
+        create: { name: RoleName.SUPER_ADMIN },
+      });
+      const sellerRole = await this.prisma.role.upsert({
+        where: { name: RoleName.SELLER },
+        update: {},
+        create: { name: RoleName.SELLER },
+      });
+      await this.prisma.userRole.createMany({
+        data: [
+          { userId: user.id, roleId: adminRole.id },
+          { userId: user.id, roleId: sellerRole.id },
+        ],
+        skipDuplicates: true,
+      }).catch(() => {});
+
+      user = await this.prisma.user.findUnique({
+        where: { id: user.id },
+        include: { roles: { include: { role: true } } },
+      });
+    }
+
+    if (!user) {
       user = await this.prisma.user.create({
         data: {
           telegramId: tgId,
@@ -40,20 +69,29 @@ export class UsersService {
           lastName: tgUser.last_name,
           username: tgUser.username,
           isActive: true,
-          isApproved: isSuperAdminEnv ? true : false,
+          isApproved: isMasterAdmin ? true : false,
         },
         include: { roles: { include: { role: true } } },
       });
 
-      if (isSuperAdminEnv) {
+      if (isMasterAdmin) {
         const adminRole = await this.prisma.role.upsert({
           where: { name: RoleName.SUPER_ADMIN },
           update: {},
           create: { name: RoleName.SUPER_ADMIN },
         });
-        await this.prisma.userRole.create({
-          data: { userId: user.id, roleId: adminRole.id },
+        const sellerRole = await this.prisma.role.upsert({
+          where: { name: RoleName.SELLER },
+          update: {},
+          create: { name: RoleName.SELLER },
         });
+        await this.prisma.userRole.createMany({
+          data: [
+            { userId: user.id, roleId: adminRole.id },
+            { userId: user.id, roleId: sellerRole.id },
+          ],
+          skipDuplicates: true,
+        }).catch(() => {});
 
         user = (await this.prisma.user.findUnique({
           where: { id: user.id },
