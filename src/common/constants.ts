@@ -20,6 +20,7 @@ export const MENU_BUTTONS = {
   inventory: '📦 Товарлар',
   debts: '💳 Қарздорликлар',
   search: '🔎 ID / чек рақами бўйича қидириш',
+  dailyReport: '💸 Кунлик ҳисобот',
   reports: '📊 Ҳисоботлар',
   management: '⚙️ Бошқарув',
 };

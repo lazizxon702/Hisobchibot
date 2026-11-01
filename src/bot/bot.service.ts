@@ -245,9 +245,28 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       const kb = getMainMenuKeyboard(roles);
       const name = [ctx.user.firstName, ctx.user.lastName].filter(Boolean).join(' ') || ctx.from?.first_name || 'Ходим';
       await ctx.reply(
-        `${BOT_TEXTS.welcome}\n\nСизнинг профилингиз: <b>${name}</b>\nРоллар: <i>${roles.join(', ') || 'Ходим'}</i>`,
+        `${BOT_TEXTS.welcome}\n\n` +
+        `👤 Сизнинг профилингиз: <b>${name}</b>\n` +
+        `🏷 Роллар: <i>${roles.join(', ') || 'Ходим'}</i>\n\n` +
+        `ℹ️ Тўлиқ маълумот ва қўлланма учун: /info\n` +
+        `💸 Кунлик мижозлар суммаси: /daily_report`,
         { reply_markup: kb, parse_mode: 'HTML' },
       );
+    });
+
+    // /info command
+    this.bot.command(['info', 'malumot', 'help'], async (ctx) => {
+      await this.handleInfoCommand(ctx);
+    });
+
+    // /daily_report command
+    this.bot.command(['daily_report', 'kunlik_hisobot', 'hisobot'], async (ctx) => {
+      await this.handleDailyReport(ctx);
+    });
+
+    // Daily report hears
+    this.bot.hears([MENU_BUTTONS.dailyReport, 'Кунлик ҳисобот', '💸 Кунлик ҳисобот', 'Кунлик мижозлар суммаси'], async (ctx) => {
+      await this.handleDailyReport(ctx);
     });
 
     // Main menu buttons routing
@@ -514,6 +533,54 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
             storeName: store.name,
             storeAddress: store.address,
           };
+          await this.ordersService.saveDraft(ctx.user.id, 'WZ_11_AGENCY', updated);
+          await this.renderWzStep11Agency(ctx, updated);
+        } else if (data.startsWith('wz_ag:')) {
+          const agencyId = data.replace('wz_ag:', '');
+          const draft = await this.ordersService.getDraft(ctx.user.id);
+          const cur = (draft?.formData as any) || {};
+
+          if (agencyId === 'none') {
+            const updated = {
+              ...cur,
+              agencyId: null,
+              agencyName: 'Агентсиз',
+              agencyEmployeeId: null,
+              agencyEmployeeName: '—',
+            };
+            await this.ordersService.saveDraft(ctx.user.id, 'WZ_12_GENERAL_LIMIT', updated);
+            await this.renderWzStep12GeneralLimit(ctx, updated);
+          } else {
+            const agency = await this.agenciesService.getById(agencyId);
+            const updated = {
+              ...cur,
+              agencyId: agency.id,
+              agencyName: agency.name,
+            };
+            await this.ordersService.saveDraft(ctx.user.id, 'WZ_11_AGENCY_EMPLOYEE', updated);
+            await this.renderWzStep11AgencyEmployee(ctx, updated);
+          }
+        } else if (data.startsWith('wz_emp:')) {
+          const empId = data.replace('wz_emp:', '');
+          const draft = await this.ordersService.getDraft(ctx.user.id);
+          const cur = (draft?.formData as any) || {};
+
+          let empName = '—';
+          let employeeId: string | null = null;
+          if (empId !== 'skip' && empId !== 'none' && cur.agencyId) {
+            const emps = await this.agenciesService.getEmployeesByAgency(cur.agencyId);
+            const found = emps.find((e) => e.id === empId);
+            if (found) {
+              empName = found.fullName;
+              employeeId = found.id;
+            }
+          }
+
+          const updated = {
+            ...cur,
+            agencyEmployeeId: employeeId,
+            agencyEmployeeName: empName,
+          };
           await this.ordersService.saveDraft(ctx.user.id, 'WZ_12_GENERAL_LIMIT', updated);
           await this.renderWzStep12GeneralLimit(ctx, updated);
         } else if (data.startsWith('wz_genlim:')) {
@@ -588,6 +655,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
           const cur = (draft?.formData as any) || {};
 
           if (prodType === 'custom') {
+            await this.ordersService.saveDraft(ctx.user.id, 'WZ_17_PRODUCT_NAME_CUSTOM', cur);
             await ctx.reply('✏️ <b>Маҳсулот номини ёзиб юборинг:</b>\nМисол: <code>iPhone 15 Pro — 1 ta</code>', { parse_mode: 'HTML' });
             return;
           }
@@ -597,9 +665,30 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
           else if (prodType === 'ip14') prodName = 'iPhone 14 — 1 ta';
           else if (prodType === 's24') prodName = 'Samsung Galaxy S24 — 1 ta';
 
-          const updated = { ...cur, productName: prodName };
-          await this.ordersService.saveDraft(ctx.user.id, 'WZ_18_IMEI_BARCODE', updated);
-          await this.renderWzStep18ImeiBarcode(ctx, updated);
+          const currentItems: string[] = cur.itemsList || [];
+          const updatedItems = [...currentItems, prodName];
+          const combinedProductName = updatedItems.map((it) => (it.startsWith('•') ? it : `• ${it}`)).join('\n');
+
+          const updated = {
+            ...cur,
+            itemsList: updatedItems,
+            productName: combinedProductName,
+            quantity: updatedItems.length,
+          };
+          await this.ordersService.saveDraft(ctx.user.id, 'WZ_17_MORE_PRODUCTS', updated);
+          await this.renderWzStep17MoreProductsPrompt(ctx, updated);
+        } else if (data.startsWith('wz_more_prod:')) {
+          const choice = data.split(':')[1];
+          const draft = await this.ordersService.getDraft(ctx.user.id);
+          const cur = (draft?.formData as any) || {};
+
+          if (choice === 'yes') {
+            await this.ordersService.saveDraft(ctx.user.id, 'WZ_17_PRODUCT_NAME', cur);
+            await this.renderWzStep17ProductName(ctx, cur);
+          } else {
+            await this.ordersService.saveDraft(ctx.user.id, 'WZ_18_IMEI_BARCODE', cur);
+            await this.renderWzStep18ImeiBarcode(ctx, cur);
+          }
         } else if (data === 'wz_imei:skip') {
           const draft = await this.ordersService.getDraft(ctx.user.id);
           const cur = (draft?.formData as any) || {};
@@ -987,6 +1076,8 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
           const attachmentId = data.split(':')[1];
           const accessUrl = await this.attachmentsService.getAttachmentAccess(attachmentId, ctx.user.id);
           await ctx.reply(`🔒 Ҳимояланган паспорт файли ҳаволаси:\n${accessUrl}`);
+        } else if (data === 'rep_daily_agents') {
+          await this.handleDailyReport(ctx);
         }
       } catch (err) {
         await ctx.reply(`❌ Хатолик: ${(err as Error).message}`);
@@ -1233,10 +1324,23 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
             return;
           }
 
-          if (draft.step === 'WZ_17_PRODUCT_NAME' || draft.step === 'INPUT_CUSTOM_PRODUCT') {
-            const updated = { ...d, productName: text };
-            await this.ordersService.saveDraft(ctx.user.id, 'WZ_18_IMEI_BARCODE', updated);
-            await this.renderWzStep18ImeiBarcode(ctx, updated);
+          if (
+            draft.step === 'WZ_17_PRODUCT_NAME' ||
+            draft.step === 'WZ_17_PRODUCT_NAME_CUSTOM' ||
+            draft.step === 'INPUT_CUSTOM_PRODUCT'
+          ) {
+            const currentItems: string[] = d.itemsList || [];
+            const updatedItems = [...currentItems, text];
+            const combinedProductName = updatedItems.map((it) => (it.startsWith('•') ? it : `• ${it}`)).join('\n');
+
+            const updated = {
+              ...d,
+              itemsList: updatedItems,
+              productName: combinedProductName,
+              quantity: updatedItems.length,
+            };
+            await this.ordersService.saveDraft(ctx.user.id, 'WZ_17_MORE_PRODUCTS', updated);
+            await this.renderWzStep17MoreProductsPrompt(ctx, updated);
             return;
           }
 
@@ -1792,6 +1896,45 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
+  private async renderWzStep11Agency(ctx: BotContext, d: any) {
+    const agencies = await this.agenciesService.list();
+    const ik = new InlineKeyboard();
+    let col = 0;
+    for (const a of agencies) {
+      ik.text(`🤝 ${a.name}`, `wz_ag:${a.id}`);
+      col++;
+      if (col % 2 === 0) ik.row();
+    }
+    if (col % 2 !== 0) ik.row();
+    ik.text('🚫 Агентсиз', 'wz_ag:none');
+
+    await this.safeEditOrReply(
+      ctx,
+      `🏪 Дўкон: <b>${d.storeName}</b>\n\n` +
+      `🤝 <b>Қайси агент орқали? (Агентни танланг):</b>`,
+      ik,
+    );
+  }
+
+  private async renderWzStep11AgencyEmployee(ctx: BotContext, d: any) {
+    const ik = new InlineKeyboard();
+    if (d.agencyId) {
+      const emps = await this.agenciesService.getEmployeesByAgency(d.agencyId);
+      for (const e of emps) {
+        ik.text(`👔 ${e.fullName}`, `wz_emp:${e.id}`).row();
+      }
+    }
+    ik.text('⏭ Ўтказиб юбориш (Ходимсиз)', 'wz_emp:skip');
+
+    await this.safeEditOrReply(
+      ctx,
+      `🤝 Агент: <b>${d.agencyName || 'Агентсиз'}</b>\n\n` +
+      `👔 <b>Агент ходими (Исми):</b>\n\n` +
+      `<i>(Агент ходимини танланг ёки «Ўтказиб юбориш» тугмасини босинг):</i>`,
+      ik,
+    );
+  }
+
   private async renderWzStep12GeneralLimit(ctx: BotContext, d: any) {
     const ik = new InlineKeyboard()
       .text('1 000 000', 'wz_genlim:1000000')
@@ -1807,7 +1950,8 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
     await this.safeEditOrReply(
       ctx,
-      `🏪 Дўкон: <b>${d.storeName}</b>\n\n` +
+      `🏪 Дўкон: <b>${d.storeName}</b>\n` +
+      `🤝 Агент: <b>${d.agencyName || 'Агентсиз'}</b> | Ходим: <b>${d.agencyEmployeeName || '—'}</b>\n\n` +
       `1️⃣2️⃣ <b>Клиент умумий лимити:</b>\n\n` +
       `<i>(Тайёр суммани танланг ёки рақамда ёзиб юборинг):</i>`,
       ik,
@@ -1880,18 +2024,38 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       .text('📱 iPhone 15 Pro — 1 ta', 'wz_prod:ip15p')
       .text('📱 iPhone 14 — 1 ta', 'wz_prod:ip14')
       .row()
-      .text('📱 Samsung Galaxy S24', 'wz_prod:s24')
+      .text('📱 Samsung Galaxy S24 — 1 ta', 'wz_prod:s24')
       .row()
       .text('✏️ Бошқа маҳсулот номи', 'wz_prod:custom');
 
     const payoutFormatted = DecimalUtil.formatMoney(d.clientPayoutAmount, "so'm");
+    const existingListText = d.itemsList && d.itemsList.length > 0
+      ? `\n📦 <b>Киритилган товарлар (${d.itemsList.length} та):</b>\n${d.itemsList.map((x: string) => (x.startsWith('•') ? x : `• ${x}`)).join('\n')}\n\n`
+      : '';
 
     await this.safeEditOrReply(
       ctx,
       `📊 Танланган фоиз: <b>${d.foiz}%</b>\n` +
-      `1️⃣6️⃣ <b>Клиентга бериладиган сумма:</b> <b>${payoutFormatted}</b>\n\n` +
-      `1️⃣7️⃣ <b>Маҳсулот тури (тўлиқ номи) ва сони:</b>\n\n` +
+      `1️⃣6️⃣ <b>Клиентга бериладиган сумма:</b> <b>${payoutFormatted}</b>\n` +
+      existingListText +
+      `1️⃣7️⃣ <b>${d.itemsList && d.itemsList.length > 0 ? 'Кейинги маҳсулот тури ва сонини танланг:' : 'Маҳсулот тури (тўлиқ номи) ва сони:'}</b>\n\n` +
       `<i>(Маҳсулот номини танланг ёки ёзиб юборинг):</i>`,
+      ik,
+    );
+  }
+
+  private async renderWzStep17MoreProductsPrompt(ctx: BotContext, d: any) {
+    const ik = new InlineKeyboard()
+      .text('➕ Ҳа, яна товар уриш', 'wz_more_prod:yes')
+      .row()
+      .text('➡️ Йўқ, давом этиш', 'wz_more_prod:no');
+
+    const itemsFormatted = (d.itemsList || [d.productName]).map((it: string) => (it.startsWith('•') ? it : `• ${it}`)).join('\n');
+
+    await this.safeEditOrReply(
+      ctx,
+      `📦 <b>Киритилган маҳсулотлар:</b>\n${itemsFormatted}\n\n` +
+      `❓ <b>Яна бошқа товар урилмайдими?</b>`,
       ik,
     );
   }
@@ -1902,7 +2066,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
     await this.safeEditOrReply(
       ctx,
-      `📦 Маҳсулот: <b>${d.productName}</b>\n\n` +
+      `📦 Маҳсулот(лар):\n<b>${d.productName}</b>\n\n` +
       `1️⃣8️⃣ <b>Телефон бўлса IMEI коди, техника бўлса баркоди:</b>\n\n` +
       `<i>(IMEI ёки баркодни ёзиб юборинг ёки «Кейинроқ киритиш» тугмасини босинг):</i>`,
       ik,
@@ -1910,7 +2074,10 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async renderWzStep19Quantity(ctx: BotContext, d: any) {
+    const defaultQty = d.quantity || (d.itemsList ? d.itemsList.length : 1);
     const ik = new InlineKeyboard()
+      .text(`👍 Шундай (${defaultQty} та)`, `wz_qty:${defaultQty}`)
+      .row()
       .text('1 та', 'wz_qty:1')
       .text('2 та', 'wz_qty:2')
       .text('3 та', 'wz_qty:3')
@@ -1919,8 +2086,8 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
     await this.safeEditOrReply(
       ctx,
-      `1️⃣9️⃣ <b>Умумий маҳсулот сони:</b>\n\n` +
-      `<i>(Маҳсулот сонини танланг ёки ёзиб юборинг):</i>`,
+      `1️⃣9️⃣ <b>Умумий маҳсулот сони:</b> (Ҳозир: <b>${defaultQty} та</b>)\n\n` +
+      `<i>(Маҳсулот сонини тасдиқланг ёки бошқа сон танланг):</i>`,
       ik,
     );
   }
@@ -1969,12 +2136,14 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       `9. Договор скрин: <b>${d.contractPhoto ? 'Юкланди' : 'Кейинроқ'}</b>\n` +
       `10. Фото паспортом: <b>${d.passportPhoto ? 'Юкланди' : 'Кейинроқ'}</b>\n` +
       `11. Магазин: <b>${d.storeName || '—'}</b>\n` +
+      `🤝 Агент: <b>${d.agencyName || 'Агентсиз'}</b>\n` +
+      `👔 Агент ходими: <b>${d.agencyEmployeeName || '—'}</b>\n` +
       `12. Умумий лимит: <b>${genLimFormatted}</b>\n` +
       `13. Ечиладиган лимит: <b>${withLimFormatted}</b>\n` +
       `14. Прайс нархи: <b>${priceFormatted}</b>\n` +
       `15. Агент %: <b>${d.foiz}%</b>\n` +
       `16. Клиентга бериладиган сумма: <b>${payoutFormatted}</b>\n` +
-      `17. Маҳсулот: <b>${d.productName || '—'}</b>\n` +
+      `17. Маҳсулот(лар):\n<b>${d.productName || '—'}</b>\n` +
       `18. IMEI/Баркод: <b>${d.imeiOrBarcode || '—'}</b>\n` +
       `19. Сони: <b>${d.quantity || 1} та</b>\n` +
       `20. Дафтар ҳолати: <b>${DAFTAR_STATUS_TEXTS[d.daftarStatus as DaftarStatus] || 'PENDING'}</b>\n\n` +
@@ -1997,6 +2166,8 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         sellerId: ctx.user.id,
         programId: d.programId,
         storeId: d.storeId,
+        agencyId: d.agencyId || null,
+        agencyEmployeeId: d.agencyEmployeeId || null,
         contractEndDate: d.contractEndDate ? new Date(d.contractEndDate) : null,
         daftarRejected: !!d.daftarRejected,
         customer: {
@@ -2011,7 +2182,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         clientPayoutAmount: d.clientPayoutAmount || d.withdrawableLimit || 1300000,
         productName: d.productName || `${d.programName} — 1 ta`,
         imeiOrBarcode: d.imeiOrBarcode || null,
-        quantity: d.quantity || 1,
+        quantity: d.quantity || (d.itemsList ? d.itemsList.length : 1),
         daftarStatus: (d.daftarStatus as DaftarStatus) || DaftarStatus.PENDING,
       });
 
@@ -2650,6 +2821,10 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     }
 
     const report = await this.reportsService.generateFinancialReport();
+    const ik = new InlineKeyboard()
+      .text('💸 Кунлик мижозлар суммаси', 'rep_daily_agents')
+      .row();
+
     const msg =
       `📊 <b>Молиявий ҳисобот:</b>\n\n` +
       `<b>Буюртмалар:</b> ${report.orders.totalOrders} та\n` +
@@ -2664,7 +2839,42 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       `Жами UZS эквиваленти: ${report.payments.totalCalculatedUzs}\n\n` +
       `Бекор қилинган тўловлар (Reversals): ${report.reversals.count} та (${report.reversals.totalReversedAmount})`;
 
-    await ctx.reply(msg, { parse_mode: 'HTML' });
+    await ctx.reply(msg, { reply_markup: ik, parse_mode: 'HTML' });
+  }
+
+  private async handleInfoCommand(ctx: BotContext) {
+    const roles: RoleName[] = ctx.userRoles || [];
+    const name = [ctx.user?.firstName, ctx.user?.lastName].filter(Boolean).join(' ') || ctx.from?.first_name || 'Ходим';
+    const tgId = ctx.from?.id || '—';
+
+    const infoText =
+      `ℹ️ <b>«Ҳисобчи» тизими ҳақида маълумот:</b>\n\n` +
+      `👤 <b>Фойдаланувчи:</b> ${name}\n` +
+      `🆔 <b>Telegram ID:</b> <code>${tgId}</code>\n` +
+      `🏷 <b>Роллар:</b> <i>${roles.join(', ') || 'Ходим'}</i>\n\n` +
+      `📋 <b>Асосий буйруқлар:</b>\n` +
+      `• /start — Бош менюни очиш\n` +
+      `• /info — Тизим бўйича тўлиқ маълумот\n` +
+      `• /daily_report ёки /kunlik_hisobot — 💸 Кунлик мижозлар суммаси ҳисоботи\n` +
+      `• /check ёки <code>🧾 Янги чек уриш</code> — Янги чек чиқариш\n` +
+      `• /draft — Сақланган қораламани давом эттириш\n` +
+      `• /my_orders — Шахсий чеклар рўйхати\n\n` +
+      `💡 <b>Янги имкониятлар:</b>\n` +
+      `1️⃣ <b>Агент ва агент ходимини танлаш:</b> Чек уриш жараёнида қайси агент ва агент ходими орқали урилаётгани танланади.\n` +
+      `2️⃣ <b>Бир нечта товар уриш:</b> Маҳсулот танлангандан сўнг <i>«Яна бошқа товар урилмайдими?»</i> тугмаси чиқади ва чека қўшимча маҳсулотлар қўшиш мумкин бўлади.\n` +
+      `3️⃣ <b>Кунлик мижозлар суммаси:</b> Агентлар бўйича кунлик мижозлар умумий суммаси ҳисоботи.`;
+
+    await ctx.reply(infoText, { parse_mode: 'HTML' });
+  }
+
+  private async handleDailyReport(ctx: BotContext) {
+    try {
+      const data = await this.reportsService.generateDailyAgentsReport(new Date());
+      const text = this.reportsService.formatDailyAgentsReportText(data);
+      await ctx.reply(text);
+    } catch (err) {
+      await ctx.reply(`❌ Ҳисоботни шакллантиришда хатолик: ${(err as Error).message}`);
+    }
   }
 
   private async handleManagementButton(ctx: BotContext) {

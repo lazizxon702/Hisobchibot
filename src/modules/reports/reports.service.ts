@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../infrastructure/prisma/prisma.service';
 import { DecimalUtil } from '../../common/decimal.util';
+import { DateUtil, TIMEZONE } from '../../common/date.util';
+import dayjs from 'dayjs';
 import { Currency, TransactionStatus, InventoryUnitStatus } from '@prisma/client';
 import { Decimal } from 'decimal.js';
 
@@ -167,4 +169,87 @@ export class ReportsService {
       inventory: inventoryStats,
     };
   }
+
+  async generateDailyAgentsReport(targetDate: Date = new Date()) {
+    const dateStr = DateUtil.formatDateTashkent(targetDate);
+    const startOfDay = dayjs(targetDate).tz(TIMEZONE).startOf('day').toDate();
+    const endOfDay = dayjs(targetDate).tz(TIMEZONE).endOf('day').toDate();
+
+    const standardNames = [
+      'Asadbek',
+      'Davlatbek',
+      'Nazirbek',
+      'Ozoda',
+      'Apple',
+      'Farida',
+      'Nafisa',
+      'Jahongir',
+      'Anvar',
+    ];
+
+    const orders = await this.prisma.order.findMany({
+      where: {
+        createdAt: {
+          gte: startOfDay,
+          lte: endOfDay,
+        },
+      },
+      include: { agency: true },
+    });
+
+    const agencySums = new Map<string, Decimal>();
+    let grandTotal = new Decimal(0);
+
+    for (const o of orders) {
+      const agName = o.agency?.name || 'Agentsiz';
+      const prev = agencySums.get(agName) || new Decimal(0);
+      const amount = o.clientPayoutAmount || o.totalPrice || new Decimal(0);
+      agencySums.set(agName, DecimalUtil.add(prev, amount));
+      grandTotal = DecimalUtil.add(grandTotal, amount);
+    }
+
+    const results: { name: string; total: Decimal }[] = [];
+    const usedNames = new Set<string>();
+
+    for (const name of standardNames) {
+      let sum = new Decimal(0);
+      for (const [k, v] of agencySums.entries()) {
+        if (k.toLowerCase() === name.toLowerCase()) {
+          sum = DecimalUtil.add(sum, v);
+          usedNames.add(k);
+        }
+      }
+      results.push({ name, total: sum });
+    }
+
+    // Any other agencies that had orders
+    for (const [k, v] of agencySums.entries()) {
+      if (!usedNames.has(k) && k !== 'Agentsiz') {
+        results.push({ name: k, total: v });
+      }
+    }
+
+    return {
+      dateStr,
+      results,
+      grandTotal,
+    };
+  }
+
+  formatDailyAgentsReportText(data: {
+    dateStr: string;
+    results: { name: string; total: Decimal }[];
+    grandTotal: Decimal;
+  }): string {
+    const lines = data.results.map(
+      (r) => `• ${r.name} — ${DecimalUtil.formatMoney(r.total, "so'm")}`,
+    );
+    const jamiFormatted = DecimalUtil.formatMoney(data.grandTotal, "so'm");
+
+    return `💸 Kunlik mijozlar summasi — ${data.dateStr}\n\n` +
+      lines.join('\n') +
+      `\n\n──────────────\n` +
+      `💰 Jami: ${jamiFormatted}`;
+  }
 }
+

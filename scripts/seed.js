@@ -73,14 +73,62 @@ async function main() {
   // 4. Seed Sample Agencies & Employees
   const agencies = [
     {
-      name: 'Давлатбек',
-      ownerName: 'Давлатбек',
+      name: 'Asadbek',
+      ownerName: 'Asadbek',
+      phone: '+998901112233',
+      employees: ['Ходим 1', 'Ходим 2'],
+    },
+    {
+      name: 'Davlatbek',
+      ownerName: 'Davlatbek',
       phone: '+998931112233',
       employees: ['Гўзал', 'Алишер'],
     },
     {
-      name: 'Сардор',
-      ownerName: 'Сардор',
+      name: 'Nazirbek',
+      ownerName: 'Nazirbek',
+      phone: '+998903334455',
+      employees: ['Ходим 1'],
+    },
+    {
+      name: 'Ozoda',
+      ownerName: 'Ozoda',
+      phone: '+998904445566',
+      employees: ['Ходим 1'],
+    },
+    {
+      name: 'Apple',
+      ownerName: 'Apple',
+      phone: '+998905556677',
+      employees: ['Ходим 1'],
+    },
+    {
+      name: 'Farida',
+      ownerName: 'Farida',
+      phone: '+998906667788',
+      employees: ['Ходим 1'],
+    },
+    {
+      name: 'Nafisa',
+      ownerName: 'Nafisa',
+      phone: '+998907778899',
+      employees: ['Ходим 1'],
+    },
+    {
+      name: 'Jahongir',
+      ownerName: 'Jahongir',
+      phone: '+998908889900',
+      employees: ['Ходим 1'],
+    },
+    {
+      name: 'Anvar',
+      ownerName: 'Anvar',
+      phone: '+998909990011',
+      employees: ['Ходим 1'],
+    },
+    {
+      name: 'Sardor',
+      ownerName: 'Sardor',
       phone: '+998973334455',
       employees: ['Умид', 'Жасур'],
     },

@@ -15,14 +15,12 @@ export function getMainMenuKeyboard(roles: RoleName[]): Keyboard {
     kb.text(MENU_BUTTONS.newOrder);
     kb.text(MENU_BUTTONS.drafts);
     kb.row();
-  }
-
-  kb.text(MENU_BUTTONS.myOrders);
-
-  if (isOperator) {
-    kb.text(MENU_BUTTONS.incomingQueue);
+    kb.text(MENU_BUTTONS.dailyReport);
+    kb.text(MENU_BUTTONS.myOrders);
     kb.row();
   } else {
+    kb.text(MENU_BUTTONS.dailyReport);
+    kb.text(MENU_BUTTONS.myOrders);
     kb.row();
   }
 
