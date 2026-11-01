@@ -404,6 +404,201 @@ export class OrdersService {
     });
   }
 
+  // ===================== FULL STAGE 1 (1–20 POINTS) WIZARD ORDER =====================
+
+  async createStage1Order36(dto: {
+    sellerId: string;
+    programId: string;
+    storeId: string;
+    agencyId?: string | null;
+    agencyEmployeeId?: string | null;
+    contractEndDate: Date;
+    daftarRejected: boolean;
+    customer: {
+      fullName: string;
+      phone1: string;
+      phone2?: string | null;
+      generalLimit: string | number | Decimal;
+      withdrawableLimit: string | number | Decimal;
+    };
+    productPrice: string | number | Decimal;
+    agentPercentage: number;
+    clientPayoutAmount: string | number | Decimal;
+    productName: string;
+    imeiOrBarcode?: string | null;
+    quantity: number;
+    daftarStatus: DaftarStatus;
+    attachmentIds?: string[];
+  }) {
+    const totalPrice = DecimalUtil.toDecimal(dto.productPrice);
+    const foiz = new Decimal(dto.agentPercentage);
+    const clientPayout = DecimalUtil.toDecimal(dto.clientPayoutAmount);
+    const generalLimit = DecimalUtil.toDecimal(dto.customer.generalLimit);
+    const withdrawableLimit = DecimalUtil.toDecimal(dto.customer.withdrawableLimit);
+
+    const orderNumber = await this.sequence.generateOrderNumber();
+    const checkNumber = await this.sequence.generateCheckNumber();
+
+    return this.prisma.$transaction(async (tx) => {
+      const seller = await tx.user.findUnique({
+        where: { id: dto.sellerId },
+      });
+      if (!seller) {
+        throw new NotFoundException(`Сотувчи топилмади: ${dto.sellerId}`);
+      }
+
+      const program = await tx.financingProgram.findUnique({
+        where: { id: dto.programId },
+      });
+      if (!program) {
+        throw new NotFoundException(`Дастур топилмади: ${dto.programId}`);
+      }
+
+      const store = await tx.store.findUnique({
+        where: { id: dto.storeId },
+      });
+      if (!store) {
+        throw new NotFoundException(`Дўкон топилмади: ${dto.storeId}`);
+      }
+
+      let customer = await tx.customer.findFirst({
+        where: { phone1: dto.customer.phone1 },
+      });
+
+      if (!customer) {
+        customer = await tx.customer.create({
+          data: {
+            fullName: dto.customer.fullName,
+            phone1: dto.customer.phone1,
+            phone2: dto.customer.phone2 || null,
+            generalLimit,
+            withdrawableLimit,
+          },
+        });
+      } else {
+        customer = await tx.customer.update({
+          where: { id: customer.id },
+          data: {
+            fullName: dto.customer.fullName,
+            phone2: dto.customer.phone2 || customer.phone2,
+            generalLimit,
+            withdrawableLimit,
+          },
+        });
+      }
+
+      const isNoContinuationProgram =
+        program.name.includes('Trust 1') ||
+        program.name.includes('Alif 6') ||
+        program.name.includes('Alif Кодирака');
+
+      const initialStatus = isNoContinuationProgram
+        ? OrderStatus.FIRST_STAGE_COMPLETED
+        : OrderStatus.READY_FOR_HANDOFF;
+
+      const order = await tx.order.create({
+        data: {
+          orderNumber,
+          checkNumber,
+          omborStatus: 'Tasdiqlash kutilmoqda',
+          productName: dto.productName,
+          sellerId: dto.sellerId,
+          programId: dto.programId,
+          storeId: dto.storeId,
+          customerId: customer.id,
+          agencyId: dto.agencyId || null,
+          agencyEmployeeId: dto.agencyEmployeeId || null,
+          contractEndDate: dto.contractEndDate,
+          daftarRejected: dto.daftarRejected,
+          agentPercentage: foiz,
+          clientPayoutAmount: clientPayout,
+          totalPrice,
+          totalQuantity: dto.quantity || 1,
+          businessDate: new Date(),
+          status: initialStatus,
+        },
+      });
+
+      if (dto.attachmentIds && dto.attachmentIds.length > 0) {
+        await tx.attachment.updateMany({
+          where: { id: { in: dto.attachmentIds } },
+          data: { orderId: order.id },
+        });
+      }
+
+      const item = await tx.orderItem.create({
+        data: {
+          orderId: order.id,
+          category: program.name,
+          brand: program.name,
+          model: dto.productName,
+          characteristics: dto.imeiOrBarcode || null,
+          quantity: dto.quantity || 1,
+          unitPrice: totalPrice,
+          totalPrice: DecimalUtil.mul(totalPrice, dto.quantity || 1),
+        },
+      });
+
+      const isImei =
+        dto.imeiOrBarcode && /^\d{15}$/.test(dto.imeiOrBarcode.replace(/\s+/g, ''));
+      const qty = dto.quantity || 1;
+      for (let i = 0; i < qty; i++) {
+        await tx.inventoryUnit.create({
+          data: {
+            orderId: order.id,
+            orderItemId: item.id,
+            category: program.name,
+            imei1: isImei ? dto.imeiOrBarcode : null,
+            barcode: !isImei ? dto.imeiOrBarcode : null,
+            status: InventoryUnitStatus.IN_STOCK,
+          },
+        });
+      }
+
+      await tx.daftarReview.create({
+        data: {
+          orderId: order.id,
+          status: dto.daftarStatus,
+          comment: '20-банд бўйича сотувчи томонидан кўрсатилган ҳолат',
+          reviewedAt: new Date(),
+        },
+      });
+
+      await tx.orderDraft.deleteMany({ where: { userId: dto.sellerId } });
+
+      await this.audit.log(
+        {
+          entityName: 'Order',
+          entityId: order.id,
+          action: 'ORDER_STAGE_1_FULL_36_CREATED',
+          performedById: dto.sellerId,
+          newValue: {
+            checkNumber,
+            orderNumber,
+            totalPrice: totalPrice.toString(),
+            clientPayoutAmount: clientPayout.toString(),
+            program: program.name,
+          },
+        },
+        tx,
+      );
+
+      return tx.order.findUniqueOrThrow({
+        where: { id: order.id },
+        include: {
+          seller: true,
+          program: true,
+          store: true,
+          agency: true,
+          agencyEmployee: true,
+          customer: true,
+          items: true,
+          attachments: true,
+        },
+      });
+    });
+  }
+
   async confirmOmborStatus(orderId: string, confirmedByName: string) {
     const updated = await this.prisma.order.update({
       where: { id: orderId },

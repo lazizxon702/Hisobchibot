@@ -25,11 +25,12 @@ async function main() {
   // 2. Seed Financing Programs
   const programs = [
     { name: 'Payme', requiresContinuation: true, code: 'PAYME' },
-    { name: 'Alif', requiresContinuation: false, code: 'ALIF' },
+    { name: 'Trust 1 (Ishonch)', requiresContinuation: false, code: 'ISHONCH' },
+    { name: 'Alif 6 ойлик', requiresContinuation: false, code: 'ALIF_6' },
+    { name: 'Alif Кодирака', requiresContinuation: false, code: 'ALIF_KODIR' },
     { name: 'Anorbank', requiresContinuation: true, code: 'ANOR' },
-    { name: 'Ishonch', requiresContinuation: false, code: 'ISHONCH' },
     { name: 'Uzum Nasiya', requiresContinuation: true, code: 'UZUM' },
-    { name: 'Бошқа', requiresContinuation: true, code: 'OTHER' },
+    { name: 'Бошқа дастур', requiresContinuation: true, code: 'OTHER' },
   ];
 
   for (const p of programs) {

@@ -10,11 +10,15 @@ import { UsersService } from '../users/users.service';
 import { CustomersService } from '../customers/customers.service';
 import { AuditService } from '../audit/audit.service';
 import { DecimalUtil } from '../../common/decimal.util';
+import { SequenceService } from '../../infrastructure/sequence/sequence.service';
 import {
   OrderStatus,
   InventoryUnitStatus,
   PaymentStatus,
   RoleName,
+  PaymentMethod,
+  Currency,
+  TransactionStatus,
 } from '@prisma/client';
 import { Decimal } from 'decimal.js';
 
@@ -53,6 +57,7 @@ export class SalesService {
     private readonly usersService: UsersService,
     private readonly customersService: CustomersService,
     private readonly audit: AuditService,
+    private readonly sequence: SequenceService,
   ) {}
 
   async createSale(dto: CreateSaleDto) {
@@ -200,6 +205,160 @@ export class SalesService {
       );
 
       return sale;
+    });
+  }
+
+  // ===================== FULL STAGE 2 (21–34 POINTS) SALE CREATION =====================
+
+  async createFullSale36(dto: {
+    orderId: string;
+    operatorId: string;
+    inventoryStatus: InventoryUnitStatus;
+    agencyId?: string | null;
+    agencyEmployeeId?: string | null;
+    buyer: {
+      fullName: string;
+      phone: string;
+      address?: string;
+      shopNumber?: string;
+    };
+    plannedSalePrice: string | number | Decimal;
+    actualSalePrice: string | number | Decimal;
+    paidAmount?: string | number | Decimal;
+    paymentMethod?: PaymentMethod | string;
+    hasDebt: boolean;
+    remainingAmount: string | number | Decimal;
+    debtDueDate?: Date | null;
+    videoAttachmentId?: string | null;
+    paymentStatus: PaymentStatus;
+  }) {
+    const order = await this.prisma.order.findUnique({
+      where: { id: dto.orderId },
+      include: {
+        inventoryUnits: true,
+      },
+    });
+
+    if (!order) {
+      throw new NotFoundException(`Буюртма топилмади: ${dto.orderId}`);
+    }
+
+    const plannedPrice = DecimalUtil.toDecimal(dto.plannedSalePrice);
+    const actualPrice = DecimalUtil.toDecimal(dto.actualSalePrice);
+    const remaining = dto.hasDebt ? DecimalUtil.toDecimal(dto.remainingAmount) : new Decimal(0);
+    const paid = dto.paidAmount !== undefined
+      ? DecimalUtil.toDecimal(dto.paidAmount)
+      : DecimalUtil.sub(actualPrice, remaining);
+
+    const buyer = await this.customersService.findOrCreateBuyer(dto.buyer);
+
+    return this.prisma.$transaction(async (tx) => {
+      const sale = await tx.sale.create({
+        data: {
+          orderId: order.id,
+          version: 1,
+          buyerId: buyer.id,
+          operatorId: dto.operatorId,
+          agencyId: dto.agencyId || null,
+          agencyEmployeeId: dto.agencyEmployeeId || null,
+          plannedSalePrice: plannedPrice,
+          actualSalePrice: actualPrice,
+          paidAmount: paid,
+          remainingAmount: remaining,
+          paymentStatus: dto.paymentStatus,
+          hasDebt: dto.hasDebt,
+          debtDueDate: dto.hasDebt ? dto.debtDueDate : null,
+          videoVerifiedBy: dto.videoAttachmentId ? dto.operatorId : null,
+          videoVerifiedAt: dto.videoAttachmentId ? new Date() : null,
+        },
+      });
+
+      if (DecimalUtil.isPositive(paid)) {
+        const receiptNumber = await this.sequence.generateReceiptNumber();
+        const pMethod = (dto.paymentMethod as PaymentMethod) || PaymentMethod.CASH;
+        await tx.payment.create({
+          data: {
+            saleId: sale.id,
+            receiptNumber,
+            method: pMethod,
+            currency: Currency.UZS,
+            originalAmount: paid,
+            calculatedAmount: paid,
+            status: TransactionStatus.CONFIRMED,
+            createdById: dto.operatorId,
+          },
+        });
+      }
+
+      for (const u of order.inventoryUnits) {
+        await tx.inventoryUnit.update({
+          where: { id: u.id },
+          data: {
+            status: dto.inventoryStatus,
+            soldAt: dto.inventoryStatus === InventoryUnitStatus.SOLD ? new Date() : null,
+          },
+        });
+
+        await tx.saleItem.create({
+          data: {
+            saleId: sale.id,
+            inventoryUnitId: u.id,
+            quantity: 1,
+            unitPrice: actualPrice,
+          },
+        });
+      }
+
+      if (dto.hasDebt && dto.debtDueDate) {
+        await tx.debtSchedule.create({
+          data: {
+            saleId: sale.id,
+            originalDueDate: dto.debtDueDate,
+            currentDueDate: dto.debtDueDate,
+            isSettled: false,
+          },
+        });
+      }
+
+      await tx.order.update({
+        where: { id: order.id },
+        data: { status: OrderStatus.COMPLETED },
+      });
+
+      if (dto.videoAttachmentId) {
+        await tx.attachment.update({
+          where: { id: dto.videoAttachmentId },
+          data: { saleId: sale.id },
+        });
+      }
+
+      await this.audit.log(
+        {
+          entityName: 'Sale',
+          entityId: sale.id,
+          action: 'SALE_FULL_36_CREATED',
+          performedById: dto.operatorId,
+          newValue: {
+            actualSalePrice: actualPrice.toString(),
+            hasDebt: dto.hasDebt,
+            paymentStatus: dto.paymentStatus,
+          },
+        },
+        tx,
+      );
+
+      return tx.sale.findUniqueOrThrow({
+        where: { id: sale.id },
+        include: {
+          order: { include: { customer: true, seller: true, program: true, store: true } },
+          buyer: true,
+          operator: true,
+          agency: true,
+          agencyEmployee: true,
+          items: { include: { inventoryUnit: true } },
+          debtSchedules: true,
+        },
+      });
     });
   }
 

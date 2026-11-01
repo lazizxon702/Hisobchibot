@@ -246,6 +246,11 @@ export function createMockPrismaService(db: InMemoryDb): PrismaService {
           sales: db.sales.filter((s) => s.orderId === order.id),
         };
       },
+      findUniqueOrThrow: async (args: any) => {
+        const res = await mock.order.findUnique(args);
+        if (!res) throw new Error('Order not found');
+        return res;
+      },
       findMany: async (args: any) => {
         return db.orders.map((o) => ({
           ...o,
@@ -380,6 +385,11 @@ export function createMockPrismaService(db: InMemoryDb): PrismaService {
           items: db.saleItems.filter((i) => i.saleId === sale.id),
           debtSchedules: db.debtSchedules.filter((d) => d.saleId === sale.id),
         };
+      },
+      findUniqueOrThrow: async (args: any) => {
+        const res = await mock.sale.findUnique(args);
+        if (!res) throw new Error('Sale not found');
+        return res;
       },
       findMany: async () => db.sales,
       create: async ({ data }: any) => {
