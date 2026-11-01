@@ -35,7 +35,6 @@ RUN npx prisma generate
 
 COPY --from=builder /usr/src/app/dist ./dist
 
-EXPOSE 3000
+CMD ["node", "scripts/prestart.js"]
 
-CMD ["sh", "-c", "npx prisma db push --accept-data-loss && node scripts/seed.js && node dist/src/main.js"]
 
