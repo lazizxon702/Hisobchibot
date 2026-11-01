@@ -146,6 +146,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
     // Launch bot long polling if webhook is not set
     if (!process.env.WEBHOOK_URL) {
+      await this.bot.api.deleteWebhook().catch(() => {});
       this.bot.start({
         onStart: (info) => {
           this.logger.log(`Telegram Bot started successfully as @${info.username}`);
