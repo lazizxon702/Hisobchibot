@@ -371,6 +371,26 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
           const draft = await this.ordersService.getDraft(ctx.user.id);
           const cur = (draft?.formData as any) || {};
 
+          const isOther =
+            program.name.toLowerCase().includes('бошқа') ||
+            program.name.toLowerCase().includes('boshqa') ||
+            program.name.toLowerCase().includes('other');
+
+          if (isOther) {
+            const updated = {
+              ...cur,
+              programId: program.id,
+              isCustomProgram: true,
+            };
+            await this.ordersService.saveDraft(ctx.user.id, 'WZ_3_CUSTOM_PROGRAM', updated);
+            await this.safeEditOrReply(
+              ctx,
+              `📱 <b>3-банд: Дастур номини киритинг:</b>\n\n` +
+              `<i>(Асосий панелда бўлмаган дастур номини ёзиб юборинг, масалан: <code>Zoodpay</code>, <code>Davr Bank</code>, <code>Hamkorbank</code> ва ҳ.к.):</i>`,
+            );
+            return;
+          }
+
           const updated = {
             ...cur,
             programId: program.id,
@@ -379,9 +399,33 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
           await this.ordersService.saveDraft(ctx.user.id, 'WZ_4_DURATION', updated);
           await this.renderWzStep4Duration(ctx, updated);
         } else if (data.startsWith('wz_dur:')) {
-          const months = parseInt(data.split(':')[1], 10) || 12;
+          const rawDur = data.replace('wz_dur:', '');
           const draft = await this.ordersService.getDraft(ctx.user.id);
           const cur = (draft?.formData as any) || {};
+
+          if (rawDur === 'custom') {
+            await this.ordersService.saveDraft(ctx.user.id, 'WZ_4_DURATION_CUSTOM', cur);
+            await this.safeEditOrReply(
+              ctx,
+              `📱 Дастур: <b>${cur.programName || 'Дастур'}</b>\n\n` +
+              `✏️ <b>Шартнома муддатини ойларда рақам билан ёзинг:</b>\n\n` +
+              `<i>(Масалан: <code>4</code>, <code>10</code>, <code>36</code> ёки <code>48</code>):</i>`,
+            );
+            return;
+          }
+
+          if (rawDur === 'none') {
+            const updated = {
+              ...cur,
+              durationMonths: null,
+              contractEndDate: null,
+            };
+            await this.ordersService.saveDraft(ctx.user.id, 'WZ_5_DAFTAR', updated);
+            await this.renderWzStep5Daftar(ctx, updated);
+            return;
+          }
+
+          const months = parseInt(rawDur, 10) || 12;
           const endDate = new Date(Date.now() + months * 30 * 24 * 3600 * 1000);
 
           const updated = {
@@ -1071,6 +1115,40 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
           const d = (draft.formData as any) || {};
 
           // Stage 1 text inputs
+          if (draft.step === 'WZ_3_CUSTOM_PROGRAM') {
+            const customName = text.trim();
+            if (!customName) {
+              await ctx.reply('❌ Илтимос, дастур номини ёзиб юборинг:');
+              return;
+            }
+            const prog = await this.programsService.findOrCreateCustom(customName);
+            const updated = {
+              ...d,
+              programId: prog.id,
+              programName: customName,
+            };
+            await this.ordersService.saveDraft(ctx.user.id, 'WZ_4_DURATION', updated);
+            await this.renderWzStep4Duration(ctx, updated);
+            return;
+          }
+
+          if (draft.step === 'WZ_4_DURATION' || draft.step === 'WZ_4_DURATION_CUSTOM') {
+            const clean = parseInt(text.replace(/[^\d]/g, ''), 10);
+            if (isNaN(clean) || clean <= 0) {
+              await ctx.reply('❌ Илтимос, муддатни ойларда рақам билан ёзинг (масалан: <code>6</code> ёки <code>18</code>):', { parse_mode: 'HTML' });
+              return;
+            }
+            const endDate = new Date(Date.now() + clean * 30 * 24 * 3600 * 1000);
+            const updated = {
+              ...d,
+              durationMonths: clean,
+              contractEndDate: endDate.toISOString(),
+            };
+            await this.ordersService.saveDraft(ctx.user.id, 'WZ_5_DAFTAR', updated);
+            await this.renderWzStep5Daftar(ctx, updated);
+            return;
+          }
+
           if (draft.step === 'WZ_6_CUSTOMER_NAME') {
             const updated = { ...d, customerName: text };
             await this.ordersService.saveDraft(ctx.user.id, 'WZ_7_CUSTOMER_PHONE1', updated);
@@ -1558,6 +1636,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       else if (nameLower.includes('ishonch')) icon = '🔵';
       else if (nameLower.includes('uzum')) icon = '🍇';
       else if (nameLower.includes('payme')) icon = '📱';
+      else if (nameLower.includes('бошқа') || nameLower.includes('boshqa')) icon = '✏️';
 
       ik.text(`${icon} ${p.name}`, `wz_prog:${p.id}`);
       col++;
@@ -1603,13 +1682,16 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       .row()
       .text('12 ой (1 йил)', 'wz_dur:12')
       .text('18 ой', 'wz_dur:18')
-      .text('24 ой (2 йил)', 'wz_dur:24');
+      .text('24 ой (2 йил)', 'wz_dur:24')
+      .row()
+      .text('✏️ Бошқа', 'wz_dur:custom')
+      .text('❌ Йўқ', 'wz_dur:none');
 
     await this.safeEditOrReply(
       ctx,
       `📱 Дастур: <b>${d.programName}</b>\n\n` +
       `4️⃣ <b>Срок окончания договора (Шартнома муддати):</b>\n\n` +
-      `<i>(Муддат тугмаларидан бирини танланг):</i>`,
+      `<i>(Муддат тугмаларидан бирини танланг ёки «Бошқа» / «Йўқ» тугмасини босинг):</i>`,
       ik,
     );
   }
@@ -1619,9 +1701,11 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       .text('✅ Ҳа (Ўтказилади)', 'wz_daftar:yes')
       .text('❌ Йўқ (Ўтказилмайди)', 'wz_daftar:no');
 
+    const durText = d.durationMonths ? `(${d.durationMonths} ой)` : '(Шартномасиз)';
+
     await this.safeEditOrReply(
       ctx,
-      `📱 Дастур: <b>${d.programName}</b> (${d.durationMonths} ой)\n\n` +
+      `📱 Дастур: <b>${d.programName}</b> ${durText}\n\n` +
       `5️⃣ <b>Дафтар дастуридан ўтказиладими?</b>\n\n` +
       `<i>(«Ҳа» ёки «Йўқ» тугмасини босинг):</i>`,
       ik,
@@ -1874,7 +1958,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       `1. Дата/Время: <b>${nowTime}</b>\n` +
       `2. Продавец исми: <b>${sellerFullName}${sellerTgId}</b>\n` +
       `3. Қайси дастур: <b>${d.programName}</b>\n` +
-      `4. Шартнома муддати: <b>${d.durationMonths || 12} ой</b>\n` +
+      `4. Шартнома муддати: <b>${d.durationMonths ? `${d.durationMonths} ой` : 'Шартномасиз (Йўқ)'}</b>\n` +
       `5. Дафтардан ўтказиладими: <b>${d.daftarRejected ? 'Ҳа' : 'Йўқ'}</b>\n` +
       `6. Клиент: <b>${d.customerName || 'Мижоз'}</b>\n` +
       `7. Тел 1: <b>${d.phone1 || '—'}</b>\n` +
@@ -1910,7 +1994,7 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         sellerId: ctx.user.id,
         programId: d.programId,
         storeId: d.storeId,
-        contractEndDate: d.contractEndDate ? new Date(d.contractEndDate) : new Date(Date.now() + 365 * 24 * 3600 * 1000),
+        contractEndDate: d.contractEndDate ? new Date(d.contractEndDate) : null,
         daftarRejected: !!d.daftarRejected,
         customer: {
           fullName: d.customerName || [ctx.user?.firstName, ctx.user?.lastName].filter(Boolean).join(' ') || 'Мижоз',

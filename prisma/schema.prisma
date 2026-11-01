@@ -233,7 +233,7 @@ model Order {
   programId          String
   storeId            String
   customerId         String
-  contractEndDate    DateTime
+  contractEndDate    DateTime?
   daftarRejected     Boolean      @default(false)
   agentPercentage    Decimal      @db.Decimal(5, 2)
   clientPayoutAmount Decimal      @db.Decimal(18, 2)

@@ -319,5 +319,53 @@ describe('36-Point Full Business Process Tests', () => {
     expect(firstDataRow.getCell(15).value).toBe('Дилшод Алимов');
     expect(firstDataRow.getCell(23).value).toBe('iPhone 15 Pro — 1 ta');
   });
+
+  it('Scenario: Custom program input & No contract duration (Йўқ)', async () => {
+    // 1. User types custom program not in list
+    const customProg = await programsService.findOrCreateCustom('Hamkorbank');
+    expect(customProg).toBeDefined();
+    expect(customProg.name).toBe('Hamkorbank');
+    expect(customProg.isActive).toBe(false);
+
+    // If searched again, reuses existing
+    const reusedProg = await programsService.findOrCreateCustom('Hamkorbank');
+    expect(reusedProg.id).toBe(customProg.id);
+
+    // 2. Order created with custom program & contractEndDate = null (Йўқ)
+    const order = await ordersService.createStage1Order36({
+      sellerId: seller.id,
+      programId: customProg.id,
+      storeId: store.id,
+      contractEndDate: null,
+      daftarRejected: false,
+      customer: {
+        fullName: 'Бобур Раҳимов',
+        phone1: '+998901112233',
+        generalLimit: 2000000,
+        withdrawableLimit: 2000000,
+      },
+      productPrice: 2000000,
+      agentPercentage: 20,
+      clientPayoutAmount: 1600000,
+      productName: 'Hamkorbank — 1 ta',
+      quantity: 1,
+      daftarStatus: DaftarStatus.APPROVED,
+    });
+
+    expect(order.program.name).toBe('Hamkorbank');
+    expect(order.contractEndDate).toBeNull();
+
+    // Verify formatReceiptText shows custom program name
+    const { formatReceiptText } = await import('../src/bot/bot.service');
+    const receipt = formatReceiptText(order as any);
+    expect(receipt).toContain('📱 Ilova: Hamkorbank');
+    expect(receipt).toContain('• Hamkorbank — 1 ta');
+
+    // Verify Excel export handles null contractEndDate without error
+    const exportData = await ordersService.getAllOrdersForExport(seller.id);
+    const wb = await ExcelUtil.generateOrdersWorkbook(exportData as any);
+    expect(wb).toBeDefined();
+  });
 });
+
 

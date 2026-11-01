@@ -36,4 +36,22 @@ export class FinancingProgramsService {
       data,
     });
   }
+
+  async findOrCreateCustom(name: string) {
+    const trimmed = name.trim();
+    let program = await this.prisma.financingProgram.findUnique({
+      where: { name: trimmed },
+    });
+    if (!program) {
+      program = await this.prisma.financingProgram.create({
+        data: {
+          name: trimmed,
+          requiresContinuation: true,
+          isActive: false,
+        },
+      });
+    }
+    return program;
+  }
 }
+

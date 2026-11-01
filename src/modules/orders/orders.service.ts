@@ -412,7 +412,7 @@ export class OrdersService {
     storeId: string;
     agencyId?: string | null;
     agencyEmployeeId?: string | null;
-    contractEndDate: Date;
+    contractEndDate?: Date | null;
     daftarRejected: boolean;
     customer: {
       fullName: string;
@@ -508,7 +508,7 @@ export class OrdersService {
           customerId: customer.id,
           agencyId: dto.agencyId || null,
           agencyEmployeeId: dto.agencyEmployeeId || null,
-          contractEndDate: dto.contractEndDate,
+          contractEndDate: dto.contractEndDate || null,
           daftarRejected: dto.daftarRejected,
           agentPercentage: foiz,
           clientPayoutAmount: clientPayout,
