@@ -148,7 +148,15 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
 
     // Launch bot long polling if webhook is not set
     if (!process.env.WEBHOOK_URL) {
-      await this.bot.api.deleteWebhook().catch(() => {});
+      await this.bot.api.setMyCommands([
+        { command: 'start', description: 'Бош менюни очиш' },
+        { command: 'info', description: 'Тизим ва қўлланма' },
+        { command: 'daily_report', description: 'Кунлик мижозлар суммаси' },
+        { command: 'check', description: 'Янги чек уриш' },
+        { command: 'my_orders', description: 'Менинг чекларим' },
+        { command: 'draft', description: 'Қораламани кўриш' },
+      ]).catch(() => {});
+
       this.bot.start({
         onStart: (info) => {
           this.logger.log(`Telegram Bot started successfully as @${info.username}`);
@@ -278,39 +286,75 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
       await this.handleNewOrderButton(ctx);
     });
 
-    this.bot.hears(MENU_BUTTONS.drafts, async (ctx) => {
+    // Drafts
+    this.bot.command(['draft', 'drafts', 'qoralama', 'qoralamalar'], async (ctx) => {
+      await this.handleDraftsButton(ctx);
+    });
+    this.bot.hears([MENU_BUTTONS.drafts, 'Қораламалар', 'Қоралама', '📝 Қораламалар'], async (ctx) => {
       await this.handleDraftsButton(ctx);
     });
 
-    this.bot.hears(MENU_BUTTONS.myOrders, async (ctx) => {
+    // My Orders / Cheklar
+    this.bot.command(['my_orders', 'orders', 'cheklar', 'cheklarim', 'mening_cheklarim'], async (ctx) => {
+      await this.handleMyOrdersButton(ctx);
+    });
+    this.bot.hears([MENU_BUTTONS.myOrders, 'Менинг чекларим', 'Чекларим', '📋 Менинг чекларим'], async (ctx) => {
       await this.handleMyOrdersButton(ctx);
     });
 
-    this.bot.hears(MENU_BUTTONS.incomingQueue, async (ctx) => {
+    // Incoming Queue
+    this.bot.command(['incoming_queue', 'queue', 'navbat'], async (ctx) => {
+      await this.handleIncomingQueueButton(ctx);
+    });
+    this.bot.hears([MENU_BUTTONS.incomingQueue, 'Қабул қилиш навбати', 'Навбат', '📥 Қабул қилиш навбати'], async (ctx) => {
       await this.handleIncomingQueueButton(ctx);
     });
 
-    this.bot.hears(MENU_BUTTONS.daftarReview, async (ctx) => {
+    // Daftar Review
+    this.bot.command(['daftar_review', 'daftar'], async (ctx) => {
+      await this.handleDaftarReviewButton(ctx);
+    });
+    this.bot.hears([MENU_BUTTONS.daftarReview, 'Дафтар тасдиғи', 'Дафтар', '✅ Дафтар тасдиғи'], async (ctx) => {
       await this.handleDaftarReviewButton(ctx);
     });
 
-    this.bot.hears(MENU_BUTTONS.debts, async (ctx) => {
+    // Debts
+    this.bot.command(['debts', 'qarzlar', 'qarz'], async (ctx) => {
+      await this.handleDebtsButton(ctx);
+    });
+    this.bot.hears([MENU_BUTTONS.debts, 'Қарздорликлар', 'Қарздорлик', 'Қарзлар', '💳 Қарздорликлар'], async (ctx) => {
       await this.handleDebtsButton(ctx);
     });
 
-    this.bot.hears(MENU_BUTTONS.inventory, async (ctx) => {
+    // Inventory
+    this.bot.command(['inventory', 'tovarlar', 'ombor'], async (ctx) => {
+      await ctx.reply('📦 Товарларни қидириш учун IMEI ёки штрихкодни юборинг:');
+    });
+    this.bot.hears([MENU_BUTTONS.inventory, 'Товарлар', 'Омбор', '📦 Товарлар'], async (ctx) => {
       await ctx.reply('📦 Товарларни қидириш учун IMEI ёки штрихкодни юборинг:');
     });
 
-    this.bot.hears(MENU_BUTTONS.search, async (ctx) => {
+    // Search
+    this.bot.command(['search', 'qidiruv', 'izlash'], async (ctx) => {
+      await ctx.reply('🔎 Қидириш учун Буюртма ID (ORD-2026-...) ёки Чек рақамини (PAY-2026-...) ёзинг:');
+    });
+    this.bot.hears([MENU_BUTTONS.search, 'Қидириш', 'Қидирув', '🔎 ID / чек рақами бўйича қидириш'], async (ctx) => {
       await ctx.reply('🔎 Қидириш учун Буюртма ID (ORD-2026-...) ёки Чек рақамини (PAY-2026-...) ёзинг:');
     });
 
-    this.bot.hears(MENU_BUTTONS.reports, async (ctx) => {
+    // Reports
+    this.bot.command(['reports', 'hisobotlar', 'moliya'], async (ctx) => {
+      await this.handleReportsButton(ctx);
+    });
+    this.bot.hears([MENU_BUTTONS.reports, 'Ҳисоботлар', 'Молия', '📊 Ҳисоботлар'], async (ctx) => {
       await this.handleReportsButton(ctx);
     });
 
-    this.bot.hears(MENU_BUTTONS.management, async (ctx) => {
+    // Management
+    this.bot.command(['management', 'admin', 'boshqaruv'], async (ctx) => {
+      await this.handleManagementButton(ctx);
+    });
+    this.bot.hears([MENU_BUTTONS.management, 'Бошқарув', 'Админ', '⚙️ Бошқарув'], async (ctx) => {
       await this.handleManagementButton(ctx);
     });
 
@@ -1709,6 +1753,17 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
         }
         return;
       }
+
+      // Unrecognized command fallback
+      if (text.startsWith('/')) {
+        await ctx.reply(
+          `❓ <b>Номаълум буйруқ:</b> <code>${text}</code>\n\n` +
+          `• Барча буйруқлар ва қўлланма: /info\n` +
+          `• Бош меню: /start\n` +
+          `• Кунлик ҳисобот: /daily_report`,
+          { parse_mode: 'HTML' },
+        );
+      }
     });
   }
 
@@ -2668,18 +2723,29 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
   private async handleDraftsButton(ctx: BotContext) {
     const draft = await this.ordersService.getDraft(ctx.user.id);
     if (!draft) {
-      await ctx.reply('Сизда сақланган қораламалар мавжуд эмас.');
+      await ctx.reply(
+        '📝 <b>Қораламалар мавжуд эмас.</b>\n\n' +
+        'Сизда ҳозирча тўлиқ якунланмаган қоралама чек йўқ.\n\n' +
+        'Янги чек яратиш учун /check буйруғини ёки «🧾 Янги чек уриш» тугмасини босинг.',
+        { parse_mode: 'HTML' },
+      );
       return;
     }
     await ctx.reply(
-      `📝 Сизнинг қораламангиз:\nБосқич: ${draft.step}\nОхирги сақланган вақт: ${DateUtil.formatTashkent(draft.updatedAt)}`,
+      `📝 <b>Сизнинг қораламангиз:</b>\n\n• Ҳозирги босқич: <b>${draft.step}</b>\n• Охирги сақланган вақт: <code>${DateUtil.formatTashkent(draft.updatedAt)}</code>\n\nЧекни давом эттириш учун «🧾 Янги чек уриш» тугмасини босинг.`,
+      { parse_mode: 'HTML' },
     );
   }
 
   private async handleMyOrdersButton(ctx: BotContext) {
     const orders = await this.ordersService.listMyOrders(ctx.user.id);
     if (orders.length === 0) {
-      await ctx.reply('Сизга тегишли буюртмалар топилмади.');
+      await ctx.reply(
+        '📋 <b>Чеклар мавжуд эмас.</b>\n\n' +
+        'Сиз ҳали бирорта чек ёки буюртма чиқармагансиз.\n\n' +
+        'Янги чек чиқариш учун /check буйруғини ёки «🧾 Янги чек уриш» тугмасини босинг.',
+        { parse_mode: 'HTML' },
+      );
       return;
     }
 
