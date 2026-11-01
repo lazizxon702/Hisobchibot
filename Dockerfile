@@ -28,6 +28,7 @@ ENV TZ=Asia/Tashkent
 
 COPY package*.json ./
 COPY prisma ./prisma/
+COPY scripts ./scripts/
 
 RUN npm ci --only=production
 RUN npx prisma generate
@@ -36,4 +37,5 @@ COPY --from=builder /usr/src/app/dist ./dist
 
 EXPOSE 3000
 
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/src/main.js"]
+CMD ["sh", "-c", "npx prisma db push --accept-data-loss && node scripts/seed.js && node dist/src/main.js"]
+
