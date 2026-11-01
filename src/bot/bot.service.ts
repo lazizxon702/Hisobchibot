@@ -124,8 +124,10 @@ export class BotService implements OnModuleInit, OnModuleDestroy {
     private readonly storesService: StoresService,
     private readonly agenciesService: AgenciesService,
   ) {
-    const token =
-      process.env.BOT_TOKEN || '9167571167:AAG9nOKq8IoKV0h8wfl2xKSeXhoYYiwppz0';
+    const token = process.env.BOT_TOKEN;
+    if (!token) {
+      throw new Error('BOT_TOKEN environment variable is not defined!');
+    }
     this.bot = new Bot<BotContext>(token);
   }
 
